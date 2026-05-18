@@ -1,5 +1,8 @@
 #!/usr/bin/bash
-#lear
+#clear
+SCRIPTS="/home/hriquelmez/Desarrollo"
+PROYECTO="revisapubseisan"
+
 echo -e "\n¿Que datos desea procesar para plotear?"
     echo -e "1-Datos de Seisan"
     echo -e "2-Datos de eventquery"
@@ -14,17 +17,19 @@ echo -e "\n¿Que datos desea procesar para plotear?"
         then
             if [ $opcion = "1" ]
             then
-                python3 /home/hriquelmez/Revision_Local/revisaselect.py
-                python3 /home/hriquelmez/Revision_Local/revisacollect.py
+                #python3 /home/hriquelmez/Revision_Local/revisaselect.py
+                python3 $SCRIPTS/$PROYECTO/revisaselect.py
+                #python3 /home/hriquelmez/Revision_Local/revisacollect.py
+                python3 $SCRIPTS/$PROYECTO/revisacollect.py
                 echo -e "\n***** Procesando datos extraidos desde seisan *****"
                 #python3 /home/hriquelmez/Revision_Local/proc_query_harz_2.py $1 $2
                 fuente="seisan"
-                python3 /home/hriquelmez/Revision_Local/generajson.py "salida_collect.csv" $fuente
+                python3 $SCRIPTS/$PROYECTO/generajson.py "salida_collect.csv" $fuente
             else
                 if [ $opcion = "2" ]
                 then
-                    python3 /home/hriquelmez/Revision_Local/revisaselect.py
-                    python3 /home/hriquelmez/Revision_Local/revisacollect.py
+                    python3 $SCRIPTS/$PROYECTO/revisaselect.py
+                    python3 $SCRIPTS/$PROYECTO/revisacollect.py
                     echo -e "\n***** Procesando datos extraidos desde eventquery *****"
                     #python3 /home/hriquelmez/Revision_Local/proc_query_harz_2.py $1 $2
 
@@ -33,17 +38,17 @@ echo -e "\n¿Que datos desea procesar para plotear?"
                     do
                         #echo -e $linea
                         fuente="eventquery"
-                        python3 /home/hriquelmez/Revision_Local/generajson.py $linea $fuente
+                        python3 $SCRIPTS/$PROYECTO/generajson.py $linea $fuente
                         rm listadocsv.txt
                     done < listadocsv.txt
                 else
                     if [ $opcion = "3" ]
                     then
-                        python3 /home/hriquelmez/Revision_Local/revisaselect.py
-                        python3 /home/hriquelmez/Revision_Local/revisacollect.py
+                        python3 $SCRIPTS/$PROYECTO/revisaselect.py
+                        python3 $SCRIPTS/$PROYECTO/revisacollect.py
                         echo -e "\n***** Procesando datos no publicados desde seisan *****"
                         fuente="seisan"
-                        python3 /home/hriquelmez/Revision_Local/generajson.py "no_pub_desde_2_5.csv" $fuente
+                        python3 $SCRIPTS/$PROYECTO/generajson.py "no_pub_desde_2_5.csv" $fuente
                     else
                         echo -e "\n¡¡¡ Hasta pronto !!!"
                         exit 0
@@ -66,7 +71,7 @@ echo -e "\n¿Que datos desea procesar para plotear?"
         while IFS= read -r linea
         do
         #python3 /home/hriquelmez/Revision_Local/plotear.py $linea "seisan"
-        python3 /home/hriquelmez/Revision_Local/plotear.py $linea $fuente
+        python3 $SCRIPTS/$PROYECTO/plotear.py $linea $fuente
         done < listado.txt
         rm listado.txt
         if [[ $fuente = "eventquery" ]]

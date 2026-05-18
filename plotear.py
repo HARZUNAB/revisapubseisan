@@ -10,9 +10,11 @@ import csv
 
 # define ruta de mapas utilizados y directorio donde se encuenta el usuario al ejecutar el script plotear
 # en este directorio deben estar los archivos .json que se generaron con anterioridad 
-path_perfil="/home/hriquelmez/Revision_Local/harzmapas/perfiles_seisan"
+#path_perfil="/home/hriquelmez/Revision_Local/harzmapas/perfiles_seisan"
+path_perfil="/home/hriquelmez/Desarrollo/harzmapas/perfiles_seisan"
 # path mapas planta harz
-path_planta="/home/hriquelmez/Revision_Local/harzmapas/planta_2"
+#path_planta="/home/hriquelmez/Revision_Local/harzmapas/planta_2"
+path_planta="/home/hriquelmez/Desarrollo/harzmapas/planta_2"
 path_ejecucion=os.getcwd()
 
 def crear_canvas(nuevo_ancho, nuevo_alto):
