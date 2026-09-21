@@ -1,736 +1,1022 @@
-from PIL import Image, ImageTk, ImageDraw, ImageGrab
-import tkinter as tk
+#!/usr/bin/env python3
+"""
+plotear.py
+==========
+Plotea eventos de subducción sobre sus perfiles y la vista en planta,
+usando matplotlib + cartopy (misma tecnología de mapasOPA/ploteo),
+con los perfiles detectados dinámicamente desde la carpeta "grillas".
+
+Uso:
+    python3 plotear.py <archivo_json> <fuente>
+
+    archivo_json : archivo JSON generado por generajson.py
+                   (eventos_seisan.json o eventos_eventquery.json)
+    fuente       : "seisan" | "eventquery"
+
+Cada archivo JSON contiene UNA lista con todos los eventos, cada uno con su
+campo "perfil" (id del perfil asignado o None si no corresponde a ninguno).
+Este script agrupa los eventos en memoria por perfil y abre una ventana por
+perfil (planta a la izquierda, perfil a la derecha). Los eventos sin perfil
+se plotean solo sobre la planta.
+"""
+
+import os
+import sys
 import json
-import time
-import sys, os
-#from tkinter import messagebox
-from tkinter import scrolledtext
-import pandas as pd
+import math
 import csv
 
-# define ruta de mapas utilizados y directorio donde se encuenta el usuario al ejecutar el script plotear
-# en este directorio deben estar los archivos .json que se generaron con anterioridad 
-#path_perfil="/home/hriquelmez/Revision_Local/harzmapas/perfiles_seisan"
-path_perfil="/home/hriquelmez/Desarrollo/harzmapas/perfiles_seisan"
-# path mapas planta harz
-#path_planta="/home/hriquelmez/Revision_Local/harzmapas/planta_2"
-path_planta="/home/hriquelmez/Desarrollo/harzmapas/planta_2"
-path_ejecucion=os.getcwd()
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-def crear_canvas(nuevo_ancho, nuevo_alto):
-    # Crear la ventana principal
-    ventana = tk.Tk()
-    ventana.title("Perfil / Planta")
+import numpy as np
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+from PIL import Image
+from adjustText import adjust_text
 
-    # Crear el canvas perfil
-    #canvas = tk.Canvas(ventana, width=900, height=800)
-    canvas = tk.Canvas(ventana, width=nuevo_ancho, height=nuevo_alto)
-    canvas.pack(side=tk.LEFT)
+import asigna_perfiles as ap
 
-    # Crear el canvas para planta
-    #canvas_planta = tk.Canvas(ventana, width=900, height=800)
-    canvas_planta = tk.Canvas(ventana, width=nuevo_ancho, height=nuevo_alto)
-    canvas_planta.pack(side=tk.RIGHT)
-    return ventana, canvas, canvas_planta
+Image.MAX_IMAGE_PIXELS = None  # desactiva el límite de seguridad de PIL
 
-def redimensionar_imagen(imagen_path, nuevo_ancho, nuevo_alto):
-    imagen = Image.open(imagen_path)
-    #imagen_planta = Image.open(imagen_planta_path)
-    imagen_redimensionada = imagen.resize((nuevo_ancho, nuevo_alto), Image.LANCZOS)
-    return ImageTk.PhotoImage(imagen_redimensionada)
 
-def mostrar_imagen_en_canvas(canvas, imagen_tk):
-    canvas.create_image(0, 0, anchor=tk.NW, image=imagen_tk)
-    canvas.image = imagen_tk  # Mantener una referencia a la imagen
+# =========================================================================
+# PARÁMETROS CONFIGURABLES (EDITAR SEGÚN SEA NECESARIO)
+# =========================================================================
 
-def geographic_to_canvas_planta(lat, lon, min_lat, max_lat, min_lon, max_lon, canvas_width, canvas_height):
-    # Convierte coordenadas geográficas (latitud, longitud) a coordenadas de píxeles en un canvas.
-    # Calcula la escala para latitud y longitud
-    lat_scale = (canvas_height) / (max_lat - min_lat)
-    lon_scale = (canvas_width) / (max_lon - min_lon)
+# FIG_SIZE: tamaño (pulgadas) de la figura que se abre por perfil.
+# La planta ocupa el subplot izquierdo y el perfil el derecho.
+FIG_SIZE = (15, 7)
 
-    # Calcula las coordenadas x e y en el canvas
-    x = (lon - min_lon) * lon_scale
-    y = canvas_height - ((lat - min_lat) * lat_scale)  # Invertir y para la coordenada del canvas
-    #veces_planta=veces_planta+1
-    #print('veces en geographic_to_canvas_planta:',veces_planta)
-    return x, y
+# DPI: resolución de la figura. A mayor DPI, mapas más nítidos (y algo más
+# lentos al dibujar). Default 100 (buen equilibrio pantalla).
+DPI = 100
 
-def geographic_to_canvas_perfil(x, y, minY, maxY, minX, maxX, canvas_width, canvas_height):
-    # Convierte coordenadas geográficas (latitud, profundidad) a coordenadas de píxeles en un canvas.
-    # Calcula la escala para longitud y profundidad
-    canvasX = ((x - minX) / (maxX - minX)) * canvas_width
-    canvasY = canvas_height - ((y - minY) / (maxY - minY)) * canvas_height
-    #print('veces en geographic_to_canvas_perfil:',veces_perfil)
-    return canvasX, canvasY
+# PROF_MAX_KM: profundidad máxima (km) mostrada en el eje vertical del perfil.
+# El eje va desde -PROF_MAX_KM (abajo) hasta ALT_MAR_KM (arriba).
+PROF_MAX_KM = 250
 
-def ploteando(archivo_plot, perfil_plot, planta_plot, fuente, percibidos):
+# ALT_MAR_KM: kilómetros positivos por encima del nivel del mar que se muestran
+# en la parte superior del perfil (para ver la topografía).
+ALT_MAR_KM = 15
 
-    if (fuente == "eventquery"):
-        if not os.path.exists("percibidos.txt"):
-            # archivos de salida
-            archivo_perc=open("percibidos.txt", "w")
+# MARGEN_PLANTA_GRADOS: margen en grados alrededor de la extensión del perfil
+# para recortar la imagen de planta desde el relieve (local o global).
+MARGEN_PLANTA_GRADOS = 0.6
 
-            # cabeceras para cada archivo .txt de salida (Para plotear con google earth)
-            archivo_perc.write("id fecha hora latitud longitud prof mag tipomag percibido\n")
-        # podria ser necesario un else y borrar si existe el archivo txt
-        #else:
-        #    archivo_perc=open("percibidos.txt", "a")
-    
-    listaperci=[]
-    #muestra por pantalla la fuente de datos a plotear (seisan/eventquery)
-    #print('fuente datos:', fuente)
+# RESOLUCION_RELIEVE_PLANTA: alto (px) al que se redimensiona el recorte de
+# relieve de la planta al proyectarlo. Controla la nitidez del fondo.
+# Configurable: bajar a ~400-500 acelera bastante el render del fondo del mapa
+# (el imshow) con una pérdida de nitidez apenas perceptible en pantalla;
+# subir hacia 900/1000 la mejora para exportar/ampliar a costa de velocidad.
+RESOLUCION_RELIEVE_PLANTA = 500
 
-    # Define las coordenadas del mapa base
+# NIVEL COASTLINE/BORDES como en capturar.py:
+# NIVEL_GEO = "50m" coastlines y bordes de países.
+NIVEL_GEO = "50m"
 
-    # Para mapas perfiles (parametros del perfil a plotear)
-    # Asigna valores para parametros del cuadrante base para canvas para mapa perfil
-    minY = perfiles_seisan[perfil_plot]["minY"]
-    maxY = perfiles_seisan[perfil_plot]["maxY"]
-    minX = perfiles_seisan[perfil_plot]["minX"]
-    maxX = perfiles_seisan[perfil_plot]["maxX"]
+# COLOR_PERCIBIDO: color de los eventos percibidos (fuente eventquery, campo
+# percibido="S"). Puede ser nombre o código hexadecimal.
+COLOR_PERCIBIDO = "tomato"
 
-    # Para mapas planta (parametros del mapa planta a plotear)
-    # Asigna valores para parametros del cuadrante base para canvas para mapa planta
-    min_lat = plantas[planta_plot]["minY"]
-    max_lat = plantas[planta_plot]["maxY"]
-    min_lon = plantas[planta_plot]["minX"]
-    max_lon = plantas[planta_plot]["maxX"]
+# COLOR_NO_PERCIBIDO: color del resto de los eventos (no percibidos o seisan).
+COLOR_NO_PERCIBIDO = "teal"
 
-    # Archvo que se va a plotear. Esto esta definido con anterioridad en el diccionario plotear
-    nombre_del_archivo = path_ejecucion+"/"+archivo_plot
-    #print("ploteado", nombre_del_archivo)
+# COLOR_SLAB: color de la línea del slab en el perfil.
+COLOR_SLAB = "black"
 
-    percibidos=0
-    total_eventos=0
-    evento_percibido=[]
+# COLOR_TOPO: color de la línea de topografía/batimetría en el perfil.
+COLOR_TOPO = "black"
 
-    with open(nombre_del_archivo) as contenido:
-            eventos = json.load(contenido)
-            for evento in eventos:
+# MAX_EVENTOS_ETIQUETA: si el perfil tiene menos/igual cantidad de eventos,
+# se muestran las etiquetas (id) junto a cada punto. Por encima del umbral
+# se omiten: con muchas etiquetas son ilegibles y adjust_text (cuadrático
+# en nº de textos) encarece mucho el ploteo.
+# Configurable: subirlo etiqueta perfiles más densos (a costa de velocidad);
+# bajarlo da mapas más rápidos y limpios.
+MAX_EVENTOS_ETIQUETA = 60
 
-                #print('evento')
-                #print(evento)
+# ITERACIONES_ADJUST_TEXT: iteraciones de adjust_text al acomodar etiquetas.
+# Con 1-2 iteraciones el acomodo es casi igual (el coste dominante está en
+# el primer pase) y el tiempo baja varios ordenes de magnitud.
+# Configurable: rango útil 1-3 (más iteraciones = mejor reparto, más lento).
+ITERACIONES_ADJUST_TEXT = 2
 
-                #  Definir colores al plotear
-                color="yellow"
-                color2="red"
-                
-                # Coordenadas geográficas de un evento a plotear
-                id = evento.get('id')
-                fecha_hora = evento.get('fecha hora')
-                lat_punto = float(evento.get('latitud'))
-                lon_punto = float(evento.get('longitud'))
-                if evento.get('prof')=='GUC':
-                    print(evento)
-                prof_punto = float(evento.get('prof'))*-1
+# ASPECTO_PLANTA_GRADOS: proporción fija ancho/alto (en grados) de la vista en
+# planta, igual a la proporción de la caja del subplot (FIG_SIZE con 2 subplots
+# → ~2:1). Con una proporción constante, todos los mapas de planta se renderizan
+# con el MISMO tamaño en pantalla, sin deformación geográfica. La caja se
+# centra en los eventos del perfil (el slab puede recortarse en extremos sin
+# eventos). Configurable.
+ASPECTO_PLANTA_GRADOS = 2.0
 
-                # Se invocaran a las funciones que transforman coordenadas geográficas a coordenadas del canvas para cada mapa
-                
-                # para perfil
-                x, y = geographic_to_canvas_perfil(lon_punto, prof_punto, minY, maxY, minX, maxX, nuevo_ancho, nuevo_alto)
-                
-                # Si los datos a plotear no tienen mapa de perfil no plotea datos
-                if perfil_plot[:10] != "sin_perfil":
-                    #print(evento.get('percibido'))
-                    if fuente=="eventquery" and evento.get('percibido')=="S":
-                        color=color2
-                        #print('id ',id,' Percibido')
-                    else:
-                        color=color
-                                        
-                    # Dibuja un círculo en el canvas (perfil) en las coordenadas calculadas
-                    canvas.create_oval(x-5, y-5, x+5, y+5, fill=color, outline="black")
-                    # Añade texto al mapa (opcional)
-                    canvas.create_text(x, y - 10, text=id, fill="black")
-                    #canvas.create_text(x, y - 10, text=f"({lat_punto:.2f}, {lon_punto:.2f})", fill="black")
-                
-                total_eventos=total_eventos+1
-                
-                if fuente=="eventquery" and evento.get('percibido')=="S":
-                    color=color2
-                    percibidos=percibidos+1
-                    #print('id ',id,' Percibido')
-                    #time.sleep(1)
-                    # genera csv con eventos percibidos
-                    evento_procesado = {
-                        'id': id,
-                        'fecha hora': fecha_hora,
-                        'latitud': lat_punto,
-                        'longitud': lon_punto,
-                        'prof': prof_punto,
-                        'magnitud': evento.get('magnitud'),
-                        'tipo': evento.get('tipo'),
-                        #'referencia': evento.get('referencia'),
-                        'percibido': evento.get('percibido'),
-                    }
-                    #print(evento_procesado)
-                    evento_percibido.append(evento_procesado)
 
-                    # Abrir un archivo en modo de escritura ('w')
-                    with open("percibidos.txt", "a") as archivo_perc:
-                        # Concatenar los valores del diccionario con espacios y un salto de línea
-                        linea_a_escribir = str(evento_procesado['id']) + ' ' + \
-                                        str(evento_procesado['fecha hora']) + ' ' + \
-                                        str(evento_procesado['latitud']) + ' ' + \
-                                        str(evento_procesado['longitud']) + ' ' + \
-                                        str(evento_procesado['prof']) + ' ' + \
-                                        str(evento_procesado['magnitud']) + ' ' + \
-                                        str(evento_procesado['tipo']) + ' ' + \
-                                        str(evento_procesado['percibido']) + "\n"
+# =========================================================================
+# RUTAS (resueltas respecto a este archivo, no al CWD)
+# =========================================================================
 
-                        # Escribir la línea en el archivo
-                        archivo_perc.write(linea_a_escribir)
+# ARCHIVO_TIF_GLOBAL: relieve global (Natural Earth) de respaldo para la
+# vista en planta, cuando el perfil queda fuera de la cobertura del recorte
+# local de Chile.
+ARCHIVO_TIF_GLOBAL = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  "NE2_LR_LC_SR_W_DR.tif")
 
-                    color=color
+# ARCHIVO_TIF_LOCAL: relieve pre-recortado a Chile (alta resolución, mucho
+# más liviano y rápido). Se usa como prioridad; si no existe se usa el global.
+ARCHIVO_TIF_LOCAL = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "relieve_chile.tif")
 
-                # para planta
-                x, y = geographic_to_canvas_planta(lat_punto, lon_punto, min_lat, max_lat, min_lon, max_lon, nuevo_ancho, nuevo_alto)
-                # Dibuja un círculo en el canvas en las coordenadas calculadas
-                canvas_planta.create_oval(x-5, y-5, x+5, y+5, fill=color, outline="black")
- 
-                # Añade texto al mapa (opcional)
-                canvas_planta.create_text(x, y - 10, text=id, fill="black")
-                #canvas.create_text(x, y - 10, text=f"({lat_punto:.2f}, {lon_punto:.2f})", fill="black")
+# ARCHIVO_LOCALIDADES: archivo CSV con las localidades (ciudades/pueblos) y
+# sus coordenadas, usado para marcar pueblos cercanos en la planta.
+ARCHIVO_LOCALIDADES = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "localidades.csv")
 
-            """
-            # dibujar punto volcan
-            if archivo_elegido=="file_b.json":
-                lat_volcan=float("-19.16")
-                lon_volcan=float("-68.82")
-                x, y = geographic_to_canvas_planta(lat_volcan, lon_volcan, min_lat, max_lat, min_lon, max_lon, nuevo_ancho, nuevo_alto) 
-                canvas_planta.create_oval(x-4, y-4, x+4, y+4, fill="blue", outline="black")
-                print("ploteo volcan")
-                print("en latitud ", lat_volcan)
-                print("en longitud ", lon_volcan)
-                #time.sleep(20)
-            """
 
-    return canvas, canvas_planta, percibidos, total_eventos
+# Constantes de la proyección local del recorte relieve_chile.tif (igual que
+# en mapasOPA/ploteo/capturar.py).
+RELIEVE_LOCAL = ((-97.0, -53.0), (-62.0, -4.0))  # (lon_min, lon_max), (lat_min, lat_max)
 
-def guarda_canvas_png(canvas, nombre_archivo_imagen):
+
+def _cargar_relieve_planta(lon_min, lon_max, lat_min, lat_max):
     """
-    Guarda el contenido de un canvas de Tkinter como un archivo PNG.
+    Carga el recorte de relieve para la vista en planta.
+    Prioriza el recorte local de Chile; si el área pedida queda fuera de su
+    cobertura (o no existe), usa el relieve global NE2 como respaldo.
+    Devuelve (img_rgb_resized, proyeccion) o (None, motivo) si falla.
     """
+    archivo = None
+    proyeccion = None
+
+    local = RELIEVE_LOCAL
+    (lon_min_r, lon_max_r), (lat_min_r, lat_max_r) = local
+    dentro_local = (lon_min >= lon_min_r and lon_max <= lon_max_r and
+                    lat_min >= lat_min_r and lat_max <= lat_max_r)
+
+    if dentro_local and os.path.isfile(ARCHIVO_TIF_LOCAL):
+        archivo = ARCHIVO_TIF_LOCAL
+        proyeccion = ("local",) + tuple(local[0]) + tuple(local[1])
+    elif os.path.isfile(ARCHIVO_TIF_GLOBAL):
+        archivo = ARCHIVO_TIF_GLOBAL
+        proyeccion = ("global",)
+
+    if archivo is None:
+        return None, "No se encontró ningún relieve (.tif) en el proyecto"
+
     try:
-        # Crea un archivo Postscript (vectorial) a partir del canvas
-        canvas.postscript(file=nombre_archivo_imagen + '.ps', colormode='color')
-        
-        # Abre el archivo Postscript con Pillow
-        img = Image.open(nombre_archivo_imagen + '.ps')
-        
-        # Guarda la imagen en formato PNG
-        img.save(nombre_archivo_imagen)
-        
-        # Opcional: elimina el archivo Postscript temporal
-        import os
-        os.remove(nombre_archivo_imagen + '.ps')
-        
-        print(f"Canvas guardado con éxito como {nombre_archivo_imagen}")
+        base = Image.open(archivo)
+        w, h = base.size
+        if proyeccion[0] == "local":
+            _, lon_min_r, lon_max_r, lat_min_r, lat_max_r = proyeccion
+            x0 = int((lon_min - lon_min_r) / (lon_max_r - lon_min_r) * w)
+            x1 = int((lon_max - lon_min_r) / (lon_max_r - lon_min_r) * w)
+            y0 = int((lat_max_r - lat_max) / (lat_max_r - lat_min_r) * h)
+            y1 = int((lat_max_r - lat_min) / (lat_max_r - lat_min_r) * h)
+        else:
+            x0 = int((lon_min + 180.0) / 360.0 * w)
+            x1 = int((lon_max + 180.0) / 360.0 * w)
+            y0 = int((90.0 - lat_max) / 180.0 * h)
+            y1 = int((90.0 - lat_min) / 180.0 * h)
+        x0 = max(0, min(w - 1, x0))
+        x1 = max(x0 + 1, min(w, x1))
+        y0 = max(0, min(h - 1, y0))
+        y1 = max(y0 + 1, min(h, y1))
+        if x1 <= x0 or y1 <= y0:
+            raise ValueError("área fuera de la imagen")
+        crop = base.crop((x0, y0, x1, y1))
+        alto_deseado = RESOLUCION_RELIEVE_PLANTA
+        ancho_deseado = max(1, int(crop.width * alto_deseado / max(crop.height, 1)))
+        img = crop.resize((ancho_deseado, alto_deseado), Image.LANCZOS)
+        return img.convert("RGB"), proyeccion
     except Exception as e:
-        print(f"Ocurrió un error: {e}")
-    return    
+        return None, "No se pudo proyectar el relieve .tif: %s" % e
 
-def mostrar_json_en_popup(ruta_archivo, nombre, percibidos, total_eventos, fuente):
-    """
-    Lee un archivo JSON y muestra su contenido en una ventana pop-up con scroll.
-    """
-    try:
-        with open(ruta_archivo, 'r', encoding='utf-8') as archivo:
-            # Carga el contenido del archivo JSON
-            contenido_json = json.load(archivo)
-            # Formatea el JSON para una mejor visualización (indentación)
-            texto_formateado = json.dumps(contenido_json, indent=4)
-    except FileNotFoundError:
-        tk.messagebox.showerror("Error", f"El archivo '{ruta_archivo}' no se encontró.")
-        return
-    except json.JSONDecodeError:
-        tk.messagebox.showerror("Error", "El archivo no es un JSON válido.")
-        return
-    except Exception as e:
-        tk.messagebox.showerror("Error", f"Ocurrió un error: {e}")
-        return
 
-    # Crea una ventana de nivel superior (el pop-up) que muestra el contenido del archivo que se esta ploteando
-    archivo_popup = tk.Toplevel()
-    if fuente == "eventquery":
-        archivo_popup.title(nombre + ' ( fuente ' + fuente + ' - ' + str(percibidos) + ' percibidos de ' + str(total_eventos) + ' eventos ploteados)')
+def _color_evento(fuente, evento):
+    """Define el color del evento según fuente y percibido."""
+    if fuente == "eventquery" and evento.get('percibido') == "S":
+        return COLOR_PERCIBIDO
+    return COLOR_NO_PERCIBIDO
+
+
+def _base_mapa_planta(ax, lon_min, lon_max, lat_min, lat_max):
+    """
+    Dibuja el fondo de la planta en el axes cartopy: relieve, costas, bordes
+    administrativos y grilla con etiquetas.
+    """
+    ax.set_extent([lon_min, lon_max, lat_min, lat_max], crs=ccrs.PlateCarree())
+
+    img, proyeccion = _cargar_relieve_planta(lon_min, lon_max, lat_min, lat_max)
+    if img is not None:
+        try:
+            img_array = np.asarray(img)
+            ax.imshow(img_array, origin='upper',
+                      extent=[lon_min, lon_max, lat_min, lat_max],
+                      transform=ccrs.PlateCarree())
+        except Exception as e:
+            print("[Aviso] No se pudo mostrar el relieve: %s" % e)
+            ax.patch.set_facecolor("#f7f7f4")
     else:
-        archivo_popup.title(nombre + ' ( fuente ' + fuente + ' - ' + str(total_eventos) + ' eventos ploteados)')
-        
-    archivo_popup.geometry("700x400") # Puedes ajustar el tamaño inicial de la ventana
+        ax.patch.set_facecolor("#f7f7f4")
 
-    # Crea un widget ScrolledText (combina un widget Text y una Scrollbar)
-    campo_texto = scrolledtext.ScrolledText(archivo_popup, wrap=tk.WORD, font=("Consolas", 10))
+    ax.add_feature(cfeature.COASTLINE.with_scale(NIVEL_GEO),
+                   edgecolor='#111111', linewidth=1.1, zorder=2)
+    ax.add_feature(cfeature.BORDERS.with_scale(NIVEL_GEO),
+                   edgecolor='#333333', linestyle=':', linewidth=0.8, zorder=2)
+
+    gl = ax.gridlines(draw_labels=True, linestyle='--', alpha=0.5,
+                      color='#444444', zorder=4)
+    gl.top_labels = False
+    gl.right_labels = False
+    gl.xlabel_style = {'size': 8.5, 'weight': 'bold'}
+    gl.ylabel_style = {'size': 8.5, 'weight': 'bold'}
+
+
+def _marcadores_planta(ax, eventos, fuente):
+    """
+    Plotea los eventos (scatter con picker + etiqueta de id) sobre la planta.
+    Devuelve (scatter, eventos_plot) para habilitar la selección interactiva.
+    """
+    eventos_plot = []
+    for e in eventos:
+        try:
+            float(e['longitud'])
+            float(e['latitud'])
+        except (TypeError, ValueError, KeyError):
+            continue
+        eventos_plot.append(e)
+
+    if not eventos_plot:
+        return None, []
+
+    lons = [float(e['longitud']) for e in eventos_plot]
+    lats = [float(e['latitud']) for e in eventos_plot]
+
+    colores = [_color_evento(fuente, e) for e in eventos_plot]
+    scatter = ax.scatter(lons, lats, s=60, c=colores, alpha=0.95,
+                         edgecolors='black', linewidth=1.2, zorder=5,
+                         transform=ccrs.PlateCarree(), picker=True,
+                         pickradius=6)
+
+    textos = []
+    # Etiquetas (id) solo si la cantidad de eventos lo permite (umbral
+    # configurable MAX_EVENTOS_ETIQUETA). Por encima se omiten: son ilegibles
+    # y adjust_text (cuadrático) vuelve lento el ploteo.
+    if len(eventos_plot) <= MAX_EVENTOS_ETIQUETA:
+        for e in eventos_plot:
+            try:
+                t = ax.text(float(e['longitud']), float(e['latitud']),
+                            str(e.get('id', '')), fontsize=7, zorder=6,
+                            transform=ccrs.PlateCarree())
+                textos.append(t)
+            except (TypeError, ValueError):
+                continue
+    if textos:
+        try:
+            # Acomoda las etiquetas evitando solapamientos. Valores
+            # configurables: expand (margen de separación, en fracción del
+            # tamaño de la etiqueta), min_arrow_len=0 (dibuja la flecha
+            # conectora al punto en TODAS las etiquetas; aumentarlo la dibuja
+            # solo cuando la etiqueta realmente se movió) e
+            # iter_lim=ITERACIONES_ADJUST_TEXT (control de rendimiento).
+            adjust_text(textos, ax=ax, expand=(1.2, 1.4), min_arrow_len=0,
+                        iter_lim=ITERACIONES_ADJUST_TEXT,
+                        arrowprops=dict(arrowstyle="-", color='black',
+                                        lw=0.5, alpha=0.6))
+        except Exception:
+            pass
+
+    return scatter, eventos_plot
+
+
+def _localidades_planta(ax, lon_min, lon_max, lat_min, lat_max):
+    """Marca las localidades que caen dentro del área visible de la planta."""
+    if not os.path.isfile(ARCHIVO_LOCALIDADES):
+        return
+    try:
+        with open(ARCHIVO_LOCALIDADES, mode='r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                nombre = row['Nombre']
+                try:
+                    lon_loc = float(row['Lon'])
+                    lat_loc = float(row['Lat'])
+                except (TypeError, ValueError):
+                    continue
+                if (lon_min <= lon_loc <= lon_max and
+                        lat_min <= lat_loc <= lat_max):
+                    ax.plot(lon_loc, lat_loc, 'o', color='black',
+                            markersize=3, transform=ccrs.PlateCarree(),
+                            zorder=6)
+                    ax.text(lon_loc + 0.08, lat_loc + 0.04, nombre,
+                            fontsize=8, fontweight='bold', color='black',
+                            transform=ccrs.PlateCarree(), zorder=7,
+                            path_effects=None)
+    except Exception as e:
+        print("[Aviso] No se pudieron cargar las localidades: %s" % e)
+
+
+
+def _extent_planta_por_eventos(eventos, perfil=None):
+    """
+    Calcula el área visible de la vista en planta con proporción fija
+    (ASPECTO_PLANTA_GRADOS), centrada en los eventos del perfil.
+
+    Recopila las coordenadas válidas de los eventos (rellenando con el slab
+    si el perfil no tiene eventos con coordenadas), expande con el margen de
+    planta y ajusta la extensión para que ancho/alto en grados sea exactamente
+    ASPECTO_PLANTA_GRADOS. Así todos los mapas se renderizan igual de grandes.
+    Devuelve (lon_min, lon_max, lat_min, lat_max).
+    """
+    lons = []
+    lats = []
+    for ev in eventos:
+        try:
+            lons.append(float(ev['longitud']))
+            lats.append(float(ev['latitud']))
+        except (TypeError, ValueError, KeyError):
+            continue
+
+    if not lons and perfil is not None:
+        lon_s = perfil["slab"]["lon"]
+        lat_s = perfil["slab"]["lat"]
+        lons = [float(x) for x in lon_s if not np.isnan(x)]
+        lats = [float(x) for x in lat_s if not np.isnan(x)]
+
+    if not lons:
+        return None
+
+    lon_min = min(lons) - MARGEN_PLANTA_GRADOS
+    lon_max = max(lons) + MARGEN_PLANTA_GRADOS
+    lat_min = min(lats) - MARGEN_PLANTA_GRADOS
+    lat_max = max(lats) + MARGEN_PLANTA_GRADOS
+
+    ancho = lon_max - lon_min
+    alto = lat_max - lat_min
+    if ancho <= 0 or alto <= 0:
+        return None
+
+    # Proporción fija ancho/alto en grados.
+    objetivo = ASPECTO_PLANTA_GRADOS
+    if ancho / alto < objetivo:
+        ancho = alto * objetivo
+    else:
+        alto = ancho / objetivo
+
+    lon_centro = (lon_min + lon_max) / 2.0
+    lat_centro = (lat_min + lat_max) / 2.0
+    return (lon_centro - ancho / 2.0, lon_centro + ancho / 2.0,
+            lat_centro - alto / 2.0, lat_centro + alto / 2.0)
+
+
+def _raiz_tk():
+    """Devuelve la ventana raíz Tk compartida de matplotlib (TkAgg) o None."""
+    try:
+        import tkinter
+        fm = plt.get_current_fig_manager()
+        win = fm.window
+        top = win.winfo_toplevel()
+        if isinstance(top, tkinter.Tk):
+            return top
+        raiz = top.master
+        while raiz is not None and not isinstance(raiz, tkinter.Tk):
+            raiz = raiz.master
+        return raiz
+    except Exception:
+        return None
+
+
+def _texto_extencion(lon_min, lon_max, lat_min, lat_max):
+    """Devuelve un str con la extensión geográfica en grados y km."""
+    lat_med = (lat_min + lat_max) / 2.0
+    lon_km = (lon_max - lon_min) * 111.0 * max(0.1, math.cos(math.radians(lat_med)))
+    lat_km = (lat_max - lat_min) * 111.0
+    return ("Lon %.1f° a %.1f° | Lat %.1f° a %.1f° (≈ %d × %d km)"
+            % (lon_min, lon_max, lat_min, lat_max, round(lon_km), round(lat_km)))
+
+
+def _resaltar_evento(ax, ev, lon=None, lat=None, x_km=None, prof_km=None):
+    """Dibuja un anillo grande resaltando el evento seleccionado."""
+    # Elimina resaltados previos en el mismo axes
+    for coll in list(ax.collections):
+        if getattr(coll, '_es_resaltado', False):
+            coll.remove()
+    if lon is not None and lat is not None:
+        sc = ax.scatter([lon], [lat], s=220, facecolors='none',
+                        edgecolors='red', linewidths=2.5, zorder=12,
+                        transform=ccrs.PlateCarree(), picker=False)
+    elif x_km is not None and prof_km is not None:
+        sc = ax.scatter([x_km], [prof_km], s=220, facecolors='none',
+                        edgecolors='red', linewidths=2.5, zorder=12,
+                        picker=False)
+    else:
+        return
+    sc._es_resaltado = True
+
+
+def _mostrar_popup_evento(ev):
+    """Muestra el JSON de un evento en un popup Toplevel.
+
+    El popup se redimensiona al minimo necesario para mostrar todo el contendido
+    sin barras de scroll (no se desperdicia espacio). El texto es de solo
+    lectura pero seleccionable, para poder copiar los parametros del evento.
+    Cierra el popup de evento anterior (si sigue abierto) para no acumular
+    ventanas con parametros de eventos seleccionados.
+    """
+    global _popup_evento
+    try:
+        import tkinter as tk
+        from tkinter import font as tkfont
+    except Exception:
+        return
+    raiz = _raiz_tk()
+    if raiz is None:
+        return
+    if _popup_evento is not None:
+        try:
+            if _popup_evento.winfo_exists():
+                _popup_evento.destroy()
+        except Exception:
+            pass
+        _popup_evento = None
+    contenido = json.dumps(ev, indent=4, ensure_ascii=False)
+    popup = tk.Toplevel(raiz)
+    popup.title("Evento %s - %s" % (ev.get('id', ''), ev.get('fecha hora', '')))
+    txt = tk.Text(popup, wrap="none", font=("Consolas", 10), padx=8, pady=8,
+                  borderwidth=0, highlightthickness=0, cursor="arrow")
+    txt.pack(fill="both", expand=True)
+    txt.insert(tk.INSERT, contenido)
+    txt.config(state=tk.DISABLED)
+    fuente = tkfont.Font(font=("Consolas", 10))
+    ancho_px = max(fuente.measure(linea) for linea in contenido.split("\n"))
+    alto_px = fuente.metrics("linespace") * (contenido.count("\n") + 1)
+    popup.update_idletasks()
+    popup.geometry("%dx%d" % (ancho_px + 20, alto_px + 20))
+    _popup_evento = popup
+
+
+def _resaltar_en_axes(ax, ev):
+    """Resalta 'ev' en 'ax' (planta cartopy o perfil rectilineo)."""
+    if ax.name.startswith('cartopy'):
+        try:
+            _resaltar_evento(ax, ev, lon=float(ev['longitud']),
+                             lat=float(ev['latitud']))
+        except (TypeError, ValueError, KeyError):
+            pass
+    else:
+        try:
+            _resaltar_evento(ax, ev, x_km=float(ev.get('along_km')),
+                             prof_km=float(ev['prof']) * -1)
+        except (TypeError, ValueError, KeyError):
+            pass
+
+
+def _buscar_mismo_evento(ev, lista):
+    """Devuelve el evento equivalente a 'ev' dentro de 'lista', o None."""
+    for e in lista:
+        if e is ev:
+            return e
+    ident = ev.get('id')
+    if ident is not None:
+        for e in lista:
+            if e.get('id') == ident:
+                return e
+    return None
+
+
+def _conectar_seleccion_eventos(fig, ax, scatter, eventos_plot,
+                                contraparte=None):
+    """
+    Conecta clics sobre un scatter para resaltar y mostrar JSON.
+
+    Usa deteccion propia (scatter.contains) en button_press/button_release,
+    independiente del widgetlock del toolbar: la seleccion funciona tambien
+    mientras el modo zoom/pan esta activo (matplotlib ignora los clics simples
+    de < 5 px en esos modos, asi no hay conflicto). Si 'contraparte' es
+    (ax2, eventos2), resalta el mismo evento en el otro mapa con el mismo
+    anillo (mismo tamano y color).
+    """
+    presion = {'x': None, 'y': None}
+
+    def on_press(evento):
+        if getattr(evento, 'x', None) is None:
+            return
+        presion['x'] = evento.x
+        presion['y'] = evento.y
+
+    def on_release(evento):
+        if presion['x'] is None:
+            return
+        dx = abs(evento.x - presion['x'])
+        dy = abs(evento.y - presion['y'])
+        presion['x'] = None
+        presion['y'] = None
+        if dx >= 5 or dy >= 5:
+            return  # fue un drag (zoom/pan), no un clic simple
+        if getattr(evento, 'button', 1) not in (1, None):
+            return
+        cont = scatter.contains(evento)
+        if not cont[0]:
+            return
+        ind = cont[1]['ind']
+        if not len(ind):
+            return
+        idx = int(ind[0])
+        if idx >= len(eventos_plot):
+            return
+        ev = eventos_plot[idx]
+        _resaltar_en_axes(ax, ev)
+        if contraparte is not None:
+            ax2, eventos2 = contraparte
+            if ax2 is not None:
+                ev2 = _buscar_mismo_evento(ev, eventos2)
+                if ev2 is not None:
+                    _resaltar_en_axes(ax2, ev2)
+        fig.canvas.draw_idle()
+        _mostrar_popup_evento(ev)
+
+    fig.canvas.mpl_connect('button_press_event', on_press)
+    fig.canvas.mpl_connect('button_release_event', on_release)
+
+
+def mostrar_json_en_popup(nombre, eventos, fuente, percibidos, total_eventos):
+    """
+    Muestra el JSON de los eventos de un perfil en una ventana pop-up con scroll,
+    restaurando la funcionalidad de la versión Tkinter original.
+    """
+    try:
+        import tkinter as tk
+        from tkinter import scrolledtext
+    except Exception:
+        return
+    raiz = _raiz_tk()
+    if raiz is None:
+        return
+    contenido_json = json.dumps(eventos, indent=4, ensure_ascii=False)
+    popup = tk.Toplevel(raiz)
+    if fuente == "eventquery":
+        popup.title("%s ( fuente %s - %d percibidos de %d eventos ploteados)"
+                     % (nombre, fuente, percibidos, total_eventos))
+    else:
+        popup.title("%s ( fuente %s - %d eventos ploteados)"
+                     % (nombre, fuente, total_eventos))
+    popup.geometry("700x400")
+    campo_texto = scrolledtext.ScrolledText(popup, wrap=tk.WORD,
+                                            font=("Consolas", 10))
     campo_texto.pack(expand=True, fill="both")
+    campo_texto.insert(tk.INSERT, contenido_json)
+    campo_texto.config(state=tk.DISABLED)
 
-    # Inserta el texto formateado en el widget
-    campo_texto.insert(tk.INSERT, texto_formateado)
-    campo_texto.config(state=tk.DISABLED) # Evita que el usuario edite el texto
-    return
 
-# Diccionario con perfiles de seisan
-# min y max en X corresponden a longitudes
-# min y  max en Y corresponden a profundidades
-perfiles_seisan = {
-    "Perf_18.5_-74.280000_-66.500000_250_sm.png" : {
-        "minX" : -74.280000,
-        "maxX" : -66.500000,
-        "minY" : -250,
-        "maxY" : 15
-    },
-    "Perf_19.0_-73.700000_-66.500000_250_sm.png" : {
-        "minX" : -73.700000,
-        "maxX" : -66.500000,
-        "minY" : -250,
-        "maxY" : 15
-    },
-    "Perf_20.0_-73.120000_-66.500000_250_sm.png" : {
-        "minX" : -73.120000,
-        "maxX" : -66.500000,
-        "minY" : -250,
-        "maxY" : 15
-    },
-    "Perf_21.0_-73.920000_-66.500000_250_sm.png" : {
-        "minX" : -73.920000,
-        "maxX" : -66.500000,
-        "minY" : -250,
-        "maxY" : 15
-    },
-    "Perf_22.0_-72.960000_-66.500000_250_sm.png" : {
-        "minX" : -72.960000,
-        "maxX" : -66.500000,
-        "minY" : -250,
-        "maxY" : 15
-    },
-    "Perf_23.0_-73.060000_-66.500000_250_sm.png" : {
-        "minX" : -73.060000,
-        "maxX" : -66.500000,
-        "minY" : -250,
-        "maxY" : 15
-    },
-    "Perf_24.0_-73.120000_-66.500000_250_sm.png" : {
-        "minX" : -73.120000,
-        "maxX" : -66.500000,
-        "minY" : -250,
-        "maxY" : 15
-    },
-    "Perf_25.0_-73.140000_-66.500000_250_sm.png" : {
-        "minX" : -73.140000,
-        "maxX" : -66.500000,
-        "minY" : -250,
-        "maxY" : 15
-    },
-    "Perf_26.0_-73.260000_-66.500000_250_sm.png" : {
-        "minX" : -73.260000,
-        "maxX" : -66.500000,
-        "minY" : -250,
-        "maxY" : 15
-    },
-    "Perf_27.0_-73.420000_-66.500000_250_sm.png" : {
-        "minX" : -73.420000,
-        "maxX" : -66.500000,
-        "minY" : -250,
-        "maxY" : 15
-    },
-    "Perf_28.0_-73.640000_-66.500000_250_sm.png" : {
-        "minX" : -73.640000,
-        "maxX" : -66.500000,
-        "minY" : -250,
-        "maxY" : 15
-    },
-    "Perf_29.0_-73.900000_-66.500000_250_sm.png" : {
-        "minX" : -73.900000,
-        "maxX" : -66.500000,
-        "minY" : -250,
-        "maxY" : 15
-    },
-    "Perf_30.0_-74.100000_-66.500000_250_sm.png" : {
-        "minX" : -74.100000,
-        "maxX" : -66.500000,
-        "minY" : -250,
-        "maxY" : 15
-    },
-    "Perf_31.0_-74.240000_-66.500000_250_sm.png" : {
-        "minX" : -74.240000,
-        "maxX" : -66.500000,
-        "minY" : -250,
-        "maxY" : 15
-    },
-    "Perf_32.0_-74.420000_-66.500000_250_sm.png" : {
-        "minX" : -74.420000,
-        "maxX" : -66.500000,
-        "minY" : -250,
-        "maxY" : 15
-    },
-    "Perf_33.0_-74.640000_-66.500000_250_sm.png" : {
-        "minX" : -74.640000,
-        "maxX" : -66.500000,
-        "minY" : -250,
-        "maxY" : 15
-    },
-    "Perf_34.0_-75.000000_-66.500000_250_sm.png" : {
-        "minX" : -75.000000,
-        "maxX" : -66.500000,
-        "minY" : -250,
-        "maxY" : 15
-    },
-    "Perf_35.0_-75.440000_-66.500000_250_sm.png" : {
-        "minX" : -75.440000,
-        "maxX" : -66.500000,
-        "minY" : -250,
-        "maxY" : 15
-    },
-    "Perf_36.0_-75.900000_-66.500000_250_sm.png" : {
-        "minX" : -75.900000,
-        "maxX" : -66.500000,
-        "minY" : -250,
-        "maxY" : 15
-    },
-    "Perf_37.0_-76.200000_-66.500000_250_sm.png" : {
-        "minX" : -76.200000,
-        "maxX" : -66.500000,
-        "minY" : -250,
-        "maxY" : 15
-    },
-    "Perf_38.0_-76.420000_-66.500000_250_sm.png" : {
-        "minX" : -76.420000,
-        "maxX" : -66.500000,
-        "minY" : -250,
-        "maxY" : 15
-    },
-    "Perf_39.0_-76.660000_-66.500000_250_sm.png" : {
-        "minX" : -76.660000,
-        "maxX" : -66.500000,
-        "minY" : -250,
-        "maxY" : 15
-    },
-    "Perf_40.0_-76.840000_-66.500000_250_sm.png" : {
-        "minX" : -76.840000,
-        "maxX" : -66.500000,
-        "minY" : -250,
-        "maxY" : 15
-    },
-    "Perf_41.0_-77.020000_-66.500000_250_sm.png" : {
-        "minX" : -77.020000,
-        "maxX" : -66.500000,
-        "minY" : -250,
-        "maxY" : 15
-    },
-    "Perf_42.0_-77.240000_-66.500000_250_sm.png" : {
-        "minX" : -77.240000,
-        "maxX" : -66.500000,
-        "minY" : -250,
-        "maxY" : 15
-    },
-    "Perf_43.0_-77.300000_-66.500000_250_sm.png" : {
-        "minX" : -77.300000,
-        "maxX" : -66.500000,
-        "minY" : -250,
-        "maxY" : 15
-    },
-    "Perf_44.0_-77.380000_-66.500000_250_sm.png" : {
-        "minX" : -77.380000,
-        "maxX" : -66.500000,
-        "minY" : -250,
-        "maxY" : 15
-    },
-    "Perf_45.0_-77.380000_-66.500000_250_sm.png" : {
-        "minX" : -77.380000,
-        "maxX" : -66.500000,
-        "minY" : -250,
-        "maxY" : 15
-    },
-    "sin_perfil_norte.jpg" : {
-        "minX" : -75.0,#da lo mismo los valores ya que no se plotearan (-75.0_-66.0_-22.0_-14.0 planta)
-        "maxX" : -66.0,
-        "minY" : -250,
-        "maxY" : 15
-    },
-    "sin_perfil_sur1.jpg" : {
-        "minX" : -80.0,#da lo mismo los valores ya que no se plotearan (-80.0_-57.0_-56.0_-44.0.png planta)
-        "maxX" : -57.0,
-        "minY" : -250,
-        "maxY" : 15
-    },
-    "sin_perfil_sur2.jpg" : {
-        "minX" : -79.0,#da lo mismo los valores ya que no se plotearan (-79.0_-53.0_-65.0_-55.0.png planta)
-        "maxX" : -53.0,
-        "minY" : -250,
-        "maxY" : 15
-    },
-}
+_detener_despliegue = False
+_progreso = ""
+_popup_evento = None
 
-# Diccionario con mapas planta perfiles segun nombre de archivo .png de harz
-# min y max en X corresponden a longitudes
-# min y max en Y corresponden a latitudes
-plantas = {
-    "-74.0_-65.0_-24.0_-16.0.png" : {
-        "minX" : -74.0,
-        "maxX" : -65.0,
-        "minY" : -24.0,
-        "maxY" : -16.0
-    },
-    "-74.0_-65.0_-28.0_-20.0.png" : {
-        "minX" : -74.0,
-        "maxX" : -65.0,
-        "minY" : -28.0,
-        "maxY" : -20.0
-    },
-    "-76.0_-67.0_-31.0_-24.0.png" : {
-        "minX" : -76.0,
-        "maxX" : -67.0,
-        "minY" : -31.0,
-        "maxY" : -24.0
-    },
-    "-76.0_-67.0_-36.0_-28.0.png" : {
-        "minX" : -76.0,
-        "maxX" : -67.0,
-        "minY" : -36.0,
-        "maxY" : -28.0
-    },
-    "-77.0_-68.0_-40.0_-32.0.png" : {
-        "minX" : -77.0,
-        "maxX" : -68.0,
-        "minY" : -40.0,
-        "maxY" : -32.0
-    },
-    "-80.0_-68.0_-44.0_-36.0.png" : {
-        "minX" : -80.0,
-        "maxX" : -68.0,
-        "minY" : -44.0,
-        "maxY" : -36.0
-    },
-    "-80.0_-68.0_-47.0_-39.0.png" : {
-        "minX" : -80.0,
-        "maxX" : -68.0,
-        "minY" : -47.0,
-        "maxY" : -39.0
-    },
-    "-80.0_-68.0_-48.0_-41.0.png" : {
-        "minX" : -80.0,
-        "maxX" : -68.0,
-        "minY" : -48.0,
-        "maxY" : -41.0
-    },
-    "-80.0_-68.0_-51.0_-45.0.png" : {
-        "minX" : -80.0,
-        "maxX" : -68.0,
-        "minY" : -51.0,
-        "maxY" : -45.0
-    },
-    "-79.0_-63.0_-55.0_-49.0.png" : {
-        "minX" : -79.0,
-        "maxX" : -63.0,
-        "minY" : -55.0,
-        "maxY" : -49.0
-    },
-    "-78.0_-63.0_-60.0_-54.0.png" : {
-        "minX" : -78.0,
-        "maxX" : -63.0,
-        "minY" : -60.0,
-        "maxY" : -54.0
-    },
-    "-75.0_-66.0_-22.0_-14.0.png" : {
-        "minX" : -75.0,
-        "maxX" : -66.0,
-        "minY" : -22.0,
-        "maxY" : -14.0
-    },
-    "-80.0_-57.0_-56.0_-44.0.png" : {
-        "minX" : -80.0,
-        "maxX" : -57.0,
-        "minY" : -56.0,
-        "maxY" : -44.0
-    },
-    "-79.0_-53.0_-65.0_-55.0.png" : {
-        "minX" : -79.0,
-        "maxX" : -53.0,
-        "minY" : -65.0,
-        "maxY" : -55.0
-    },
-}
 
-# Diccionario que define con que plotear segun el archivo de datos .json con los mapas de planta de harz
-plotear = {
-    "file_a.json" : {
-        "archivo" : "sin_perfil_norte",
-        "perfil"  : "sin_perfil_norte.jpg",
-        "planta"  : "-75.0_-66.0_-22.0_-14.0.png"
-    },
-    "file_b1.json" : {
-        "archivo" : "Perfil18",
-        "perfil"  : "Perf_18.5_-74.280000_-66.500000_250_sm.png",
-        "planta"  : "-74.0_-65.0_-24.0_-16.0.png"
-    },
-    "file_b2.json" : {
-        "archivo" : "Perfil20",
-        "perfil"  : "Perf_20.0_-73.120000_-66.500000_250_sm.png",
-        "planta"  : "-74.0_-65.0_-24.0_-16.0.png"
-    },
-    "file_c.json" : {
-        "archivo" : "Perfil25",
-        "perfil"  : "Perf_25.0_-73.140000_-66.500000_250_sm.png",
-        "planta"  : "-74.0_-65.0_-28.0_-20.0.png"
-    },
-    "file_d.json" : {
-        "archivo" : "Perfil28",
-        "perfil"  : "Perf_28.0_-73.640000_-66.500000_250_sm.png",
-        "planta"  : "-76.0_-67.0_-31.0_-24.0.png"
-    },
-    "file_e.json" : {
-        "archivo" : "Perfil33",
-        "perfil"  : "Perf_33.0_-74.640000_-66.500000_250_sm.png",
-        "planta"  : "-76.0_-67.0_-36.0_-28.0.png"
-    },
-    "file_f.json" : {
-        "archivo" : "Perfil37",
-        "perfil"  : "Perf_37.0_-76.200000_-66.500000_250_sm.png",
-        "planta"  : "-77.0_-68.0_-40.0_-32.0.png"
-    },
-    "file_g.json" : {
-        "archivo" : "Perfil41",
-        "perfil"  : "Perf_41.0_-77.020000_-66.500000_250_sm.png",
-        "planta"  : "-80.0_-68.0_-44.0_-36.0.png"
-    },
-    "file_h.json" : {
-        "archivo" : "Perfil43",
-        "perfil"  : "Perf_43.0_-77.300000_-66.500000_250_sm.png",
-        "planta"  : "-80.0_-68.0_-47.0_-39.0.png"
-    },
-    "file_i.json" : {
-        "archivo" : "Perfil45",
-        "perfil"  : "Perf_45.0_-77.380000_-66.500000_250_sm.png",
-        "planta"  : "-80.0_-68.0_-48.0_-41.0.png"
-    },
-    "file_j.json" : {
-        "archivo" : "sin_perfil_sur1",
-        "perfil"  : "sin_perfil_sur1.jpg",
-        "planta"  : "-80.0_-57.0_-56.0_-44.0.png"
-    },
-    "file_k.json" : {
-        "archivo" : "sin_perfil_sur2",
-        "perfil"  : "sin_perfil_sur2.jpg",
-        "planta"  : "-79.0_-53.0_-65.0_-55.0.png"
-    },
-}
+def _registrar_progreso(texto):
+    """Guarda el avance actual del despliegue para mostrar en el título."""
+    global _progreso
+    _progreso = texto
 
-"""
-# Diccionario que define con que plotear segun el archivo de datos .json con los mapas de planta de tati
-plotear = {
-    "archivo1.json" : {
-        "archivo" : "Perfil18",
-        "perfil"  : "Perf_18.5_-74.280000_-66.500000_250_sm.png",
-        "planta"  : "-74.0_-65.5_-24.5_-16.0.png"
-    },
-    "archivo2.json" : {
-        "archivo" : "Perfil25",
-        "perfil"  : "Perf_25.0_-73.140000_-66.500000_250_sm.png",
-        "planta"  : "-74.0_-65.5_-24.5_-16.0.png"
-    },
-    "archivo3.json" : {
-        "archivo" : "Perfil28",
-        "perfil"  : "Perf_28.0_-73.640000_-66.500000_250_sm.png",
-        "planta"  : "-76.0_-67.5_-32.5_-24.0.png"
-    },
-    "archivo4.json" : {
-        "archivo" : "Perfil33",
-        "perfil"  : "Perf_33.0_-74.640000_-66.500000_250_sm.png",
-        "planta"  : "-76.0_-67.5_-32.5_-24.0.png"
-    },
-    "archivo5.json" : {
-        "archivo" : "Perfil37",
-        "perfil"  : "Perf_37.0_-76.200000_-66.500000_250_sm.png",
-        "planta"  : "-77.0_-69.0_-40.5_-32.0.png"
-    },
-    "archivo6.json" : {
-        "archivo" : "Perfil41",
-        "perfil"  : "Perf_41.0_-77.020000_-66.500000_250_sm.png",
-        "planta"  : "-79.5_-70.0_-49.0_-39.5.png"
-    },
-    "archivo7.json" : {
-        "archivo" : "Perfil43",
-        "perfil"  : "Perf_43.0_-77.300000_-66.500000_250_sm.png",
-        "planta"  : "-79.5_-70.0_-49.0_-39.5.png"
-    },
-    "archivo8.json" : {
-        "archivo" : "Perfil45",
-        "perfil"  : "Perf_45.0_-77.380000_-66.500000_250_sm.png",
-        "planta"  : "-79.5_-70.0_-49.0_-39.5.png"
-    },
-}
-"""
 
-"""
-# Cargar en una lista los nombres de los archivos json que se generan en la carpeta donde se ejecuta el script
-lista = [file for file in os.listdir() if file[-4:] == "json"]
-listajson=sorted(lista)
-largo=len(listajson)
-print('lista archivos json')
-print(listajson)
-#print('largo lista:',largo)
-"""
-# argumento enviado al ejecutar el script para plotear (archivo .json)
-archivo=sys.argv[1]
-fuente=sys.argv[2]
-percibidos=0
+def _agregar_boton_detener(fig):
+    """Añade un botón pequeño 'Detener' centrado abajo en la ventana del mapa."""
+    try:
+        from matplotlib.widgets import Button
+    except Exception:
+        return
+    ax_btn = fig.add_axes([0.46, 0.012, 0.08, 0.04])
+    for s in ax_btn.spines.values():
+        s.set_visible(False)
+    ax_btn.set_xticks([])
+    ax_btn.set_yticks([])
+    boton = Button(ax_btn, 'Detener', color='#c00000', hovercolor='#ff5050')
+    boton.label.set_color('white')
+    boton.label.set_fontweight('bold')
+    boton.label.set_fontsize(8)
+    boton.on_clicked(lambda event: detener())
+    # matplotlib registra el callback del widget como weakref; sin una
+    # referencia fuerte el Button se recolecta al salir de esta funcion y el
+    # clic deja de responder. Se ancla a la figura para que viva con ella.
+    fig._boton_detener = boton
+    return boton
 
-# resolucion para cada imagen y para el canvas
-nuevo_ancho = 800
-nuevo_alto = 800
-ventana, canvas, canvas_planta=crear_canvas(nuevo_ancho, nuevo_alto)
 
-perfil_elegido=plotear[archivo]["perfil"]
-planta_elegido=plotear[archivo]["planta"]
-archivo_elegido=archivo
+def detener():
+    """Detiene el despliegue cerrando todas las figuras abiertas."""
+    global _detener_despliegue, _popup_evento
+    _detener_despliegue = True
+    try:
+        if _popup_evento is not None:
+            if _popup_evento.winfo_exists():
+                _popup_evento.destroy()
+    except Exception:
+        pass
+    _popup_evento = None
+    try:
+        plt.close('all')
+    except Exception:
+        pass
 
-# muestra por pantalla perfil y planta ploteados
-#print('ploteado perfil', perfil_elegido)
-#print('ploteado planta', planta_elegido)
-#print('ploteado archvo', archivo_elegido)
 
-try:
-    
-    # Mapas perfiles (ruta al mapa del perfil a utilizar)
-    imagen_perfil_path = path_perfil+"/sin_margen/"+perfil_elegido # ruta a la imagen
-    
-    # Mapas planta (ruta al mapa de planta a utilizar)
-    imagen_planta_path = path_planta+"/"+planta_elegido  # ruta a la imagen
+def despliegue_detenido():
+    return _detener_despliegue
 
-except FileNotFoundError:
-    print("Error: No se encontró la imagen.")
-    exit()
-except Exception as e:
-    print(f"Error al cargar la imagen: {e}")
-    exit()
 
-# Redimensionar la imagen y obtener la versión compatible con Tkinter
-imagen_tk = redimensionar_imagen(imagen_perfil_path, nuevo_ancho, nuevo_alto)
-imagen_tk_planta = redimensionar_imagen(imagen_planta_path, nuevo_ancho, nuevo_alto)
+def _indicador_modo_interaccion(fig):
+    """
+    Muestra el modo activo del toolbar (ZOOM/PAN) y cambia el cursor.
 
-# Mostrar la imagen en el canvas
-mostrar_imagen_en_canvas(canvas, imagen_tk)
-canvas.create_text(250, nuevo_alto-50, text=perfil_elegido[:-4], fill="black", font=("Arial", 16))
-canvas.create_text(100, 20, text='Ploteando '+ archivo_elegido, fill="blue", font=("Arial", 12))
-mostrar_imagen_en_canvas(canvas_planta, imagen_tk_planta)
-canvas_planta.create_text(165, nuevo_alto-50, text=planta_elegido[:-4], fill="black", font=("Arial", 16))
+    El toolbar de matplotlib deja fijo el cursor de cruz (tcross) en modo zoom
+    con independencia de que ya se haya completado el zoom, lo que puede
+    confundir. Aqui se sustituye por una mano mientras el modo este activo y se
+    añade un texto superpuesto que indica el modo y los gestos disponibles.
 
-#canvas.create_text(250, 150, text=archivo_elegido, fill="black", font=("Arial", 12))
-canvas, canvas_planta, percibidos, total_eventos = ploteando(archivo_elegido, perfil_elegido, planta_elegido, fuente, percibidos)
-#if fuente=="eventquery":
-#    print('Percibidos:', percibidos)
+    El modo solo cambia por tres vias: los botones Zoom/Pan del toolbar (se
+    reconfigura su 'command'), la tecla Escape y por eventos de raton (para el
+    cursor se usa motion_notify_event, que corre despues del del toolbar).
+    No se usa ningun temporizador Tk ('after'): los timers pendientes de una
+    figura cerrada provocan 'invalid command name' al dispararse en el
+    mainloop, por lo que se evitan a la raiz.
+    """
+    try:
+        from matplotlib.backend_bases import cursors
+    except Exception:
+        cursors = None
+    toolbar = getattr(getattr(fig.canvas, 'manager', None), 'toolbar', None)
+    if toolbar is None:
+        return
+    canvas = fig.canvas
+    tk_canvas = None
+    try:
+        tk_canvas = canvas.get_tk_widget()
+    except Exception:
+        tk_canvas = None
 
-#guarda_canvas_png(canvas, archivo_elegido[:8]+"_perfil")
-#guarda_canvas_png(canvas_planta, archivo_elegido[:8]+"planta")
+    indicador = fig.text(
+        0.01, 0.985, "", transform=fig.transFigure, ha='left', va='top',
+        fontsize=10,
+        bbox=dict(boxstyle='round,pad=0.3', fc='lightyellow', ec='navy',
+                  alpha=0.9))
+    indicador.set_visible(False)
 
-#guarda_canvas_png(canvas)
-#guarda_canvas_png(canvas_planta)
+    estado = {'texto': '', 'parado': False,
+              'boton_zoom': None, 'boton_pan': None}
 
-mostrar_json_en_popup(path_ejecucion+'/'+archivo_elegido, archivo_elegido, percibidos, total_eventos, fuente)
+    def _texto_modo():
+        if toolbar.mode.name == 'ZOOM':
+            return ("MODO ZOOM  ·  clic = seleccionar evento  ·  "
+                    "arrastre = zoom  ·  Esc = salir")
+        if toolbar.mode.name == 'PAN':
+            return ("MODO PAN  ·  clic = seleccionar evento  ·  "
+                    "arrastre = mover vista  ·  Esc = salir")
+        return ''
 
-# Iniciar el bucle principal de Tkinter
-#time.sleep(5)
-ventana.mainloop()
+    def _refrescar_cursor():
+        if cursors is None or tk_canvas is None:
+            return
+        nuevo = (cursors.HAND if toolbar.mode.name in ('ZOOM', 'PAN')
+                 else cursors.POINTER)
+        try:
+            if tk_canvas.cget('cursor') != (
+                    'hand2' if nuevo == cursors.HAND else 'arrow'):
+                canvas.set_cursor(nuevo)
+        except Exception:
+            pass
 
-#valor_a_devolver = mostrar_json_en_popup(ruta_archivo, nombre, percibidos, total_eventos)
-#sys.exit(valor_a_devolver)
+    def _refrescar():
+        try:
+            if estado['parado']:
+                return
+            texto = _texto_modo()
+            if texto != estado['texto']:
+                estado['texto'] = texto
+                indicador.set_text(texto)
+                indicador.set_visible(bool(texto))
+                canvas.draw_idle()
+        except Exception:
+            pass
+        _refrescar_cursor()
+
+    def _alternar(modo):
+        def _adelante():
+            if estado['parado']:
+                return
+            try:
+                getattr(toolbar, modo)()
+            except Exception:
+                return
+            _refrescar()
+        return _adelante
+
+    boton_zoom = toolbar._buttons.get('Zoom') \
+        if hasattr(toolbar, '_buttons') else None
+    boton_pan = toolbar._buttons.get('Pan') \
+        if hasattr(toolbar, '_buttons') else None
+    if boton_zoom is not None:
+        estado['boton_zoom'] = _alternar('zoom')
+        try:
+            boton_zoom.configure(command=estado['boton_zoom'])
+        except Exception:
+            pass
+    if boton_pan is not None:
+        estado['boton_pan'] = _alternar('pan')
+        try:
+            boton_pan.configure(command=estado['boton_pan'])
+        except Exception:
+            pass
+
+    def _on_key(event):
+        if event is None or getattr(event, 'key', None) != 'escape':
+            return
+        if toolbar.mode.name == 'ZOOM':
+            toolbar.zoom()
+        elif toolbar.mode.name == 'PAN':
+            toolbar.pan()
+        else:
+            return
+        _refrescar()
+
+    def _on_move(event):
+        _refrescar_cursor()
+
+    fig._modo_interaccion = estado
+    canvas.mpl_connect('key_press_event', _on_key)
+    canvas.mpl_connect('motion_notify_event', _on_move)
+    _refrescar()
+
+
+def plotear_planta(eventos, fuente, perfil=None):
+    """
+    Crea una ventana con la vista en planta (relieve + localidades + eventos).
+    Si se pasa 'perfil', el área visible se deriva del recorrido del slab;
+    si no (eventos sin perfil), se usa la extensión de los propios eventos.
+    Devuelve (percibidos, total_eventos).
+    """
+    total_eventos = 0
+    percibidos = 0
+    for ev in eventos:
+        try:
+            float(ev['latitud'])
+            float(ev['longitud'])
+        except (TypeError, ValueError, KeyError):
+            continue
+        total_eventos += 1
+        if fuente == "eventquery" and ev.get('percibido') == "S":
+            percibidos += 1
+
+    extent = _extent_planta_por_eventos(eventos, perfil)
+    if extent is None:
+        return percibidos, 0
+    lon_min, lon_max, lat_min, lat_max = extent
+    if perfil is not None:
+        titulo = "Vista en Planta - Perfil %s" % perfil["id"]
+        nombre_popup = "Perfil %s" % perfil["id"]
+    else:
+        titulo = "Vista en Planta - Eventos sin perfil asignado"
+        nombre_popup = "Eventos sin perfil"
+    if _progreso:
+        titulo = "%s - %s" % (titulo, _progreso)
+    subtitulo = _texto_extencion(lon_min, lon_max, lat_min, lat_max)
+
+    fig = plt.figure(figsize=FIG_SIZE, dpi=DPI)
+    ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
+    _base_mapa_planta(ax, lon_min, lon_max, lat_min, lat_max)
+    _localidades_planta(ax, lon_min, lon_max, lat_min, lat_max)
+    scatter, eventos_plot = _marcadores_planta(ax, eventos, fuente)
+    if scatter is not None:
+        _conectar_seleccion_eventos(fig, ax, scatter, eventos_plot)
+    ax.set_title("%s\n%s" % (titulo, subtitulo), fontsize=11,
+                 fontweight='bold', pad=10)
+    mostrar_json_en_popup(nombre_popup, eventos, fuente, percibidos,
+                          total_eventos)
+    plt.tight_layout()
+    _agregar_boton_detener(fig)
+    _indicador_modo_interaccion(fig)
+    plt.show()
+    return percibidos, total_eventos
+
+
+def plotear_perfil(eventos, perfil, fuente, percibidos):
+    """
+    Crea una figura con dos subplots: vista en planta (izquierda) y perfil
+    de subducción (derecha), con etiquetas de id y selección interactiva.
+    Devuelve (percibidos, total_eventos).
+    """
+    total_eventos = 0
+    percibidos = 0
+
+    extent = _extent_planta_por_eventos(eventos, perfil)
+    if extent is None:
+        return percibidos, 0
+    lon_min, lon_max, lat_min, lat_max = extent
+
+    fig = plt.figure(figsize=FIG_SIZE, dpi=DPI)
+
+    # --- Planta (izquierda) ---
+    ax_planta = fig.add_subplot(1, 2, 1, projection=ccrs.PlateCarree())
+    _base_mapa_planta(ax_planta, lon_min, lon_max, lat_min, lat_max)
+    _localidades_planta(ax_planta, lon_min, lon_max, lat_min, lat_max)
+    scatter, eventos_plot = _marcadores_planta(ax_planta, eventos, fuente)
+    ax_planta.set_title("Vista en Planta - Perfil %s %s\n%s"
+                        % (perfil["id"], "(%s)" % _progreso if _progreso else "",
+                           _texto_extencion(lon_min, lon_max, lat_min,
+                                            lat_max)),
+                        fontsize=11, fontweight='bold', pad=10)
+
+    # --- Perfil (derecha) ---
+    ax_perfil = fig.add_subplot(1, 2, 2)
+
+    tp = perfil["topo_p"]
+    alt = perfil["topo_alt"]
+    if len(tp) > 1:
+        ax_perfil.plot(tp, alt / 1000.0, color=COLOR_TOPO, lw=1.2, zorder=3,
+                       label="Topografía/Batimetría")
+
+    sp = perfil["slab"]["p"]
+    sz = perfil["slab"]["depth"]
+    if len(sp) > 0:
+        mask = ~np.isnan(sz)
+        if np.any(mask):
+            ax_perfil.plot(sp[mask], -sz[mask], color=COLOR_SLAB, lw=2.2,
+                           zorder=4, label="Contacto Placas")
+
+    n_validos_perfil = 0
+    for e in eventos:
+        try:
+            float(e['prof'])
+            float(e.get('along_km'))
+        except (TypeError, ValueError, KeyError):
+            continue
+        n_validos_perfil += 1
+    # Mismo umbral que en la planta (MAX_EVENTOS_ETIQUETA): controla si el
+    # perfil etiqueta los ids o los omite por densidad.
+    etiquetas_perfil = n_validos_perfil <= MAX_EVENTOS_ETIQUETA
+
+    xs = []
+    ys = []
+    colores = []
+    eventos_perfil = []
+    textos = []
+    for evento in eventos:
+        try:
+            prof_punto = float(evento['prof']) * -1  # negativa hacia abajo
+            x_km = float(evento.get('along_km'))
+        except (TypeError, ValueError, KeyError):
+            continue
+        total_eventos += 1
+        color = _color_evento(fuente, evento)
+        xs.append(x_km)
+        ys.append(prof_punto)
+        colores.append(color)
+        eventos_perfil.append(evento)
+
+        if evento.get('id') is not None and etiquetas_perfil:
+            t = ax_perfil.text(x_km, prof_punto, str(evento.get('id', '')),
+                               fontsize=7, zorder=11)
+            textos.append(t)
+
+        if fuente == "eventquery" and evento.get('percibido') == "S":
+            percibidos += 1
+            with open("percibidos.txt", "a") as archivo_perc:
+                linea = "{} {} {} {} {} {} {} {}\n".format(
+                    evento.get('id'), evento.get('fecha hora'),
+                    float(evento['latitud']), float(evento['longitud']),
+                    prof_punto, evento.get('magnitud'),
+                    evento.get('tipo'), evento.get('percibido'))
+                archivo_perc.write(linea)
+
+    scatter_perf = None
+    if xs:
+        scatter_perf = ax_perfil.scatter(xs, ys, s=60, c=colores, alpha=0.95,
+                                         edgecolors='black', linewidths=1.2,
+                                         zorder=10, picker=True, pickradius=6)
+        if textos:
+            try:
+                adjust_text(textos, ax=ax_perfil,
+                            expand=(1.15, 1.7), min_arrow_len=0,
+                            iter_lim=ITERACIONES_ADJUST_TEXT,
+                            arrowprops=dict(arrowstyle="-", color='black',
+                                            lw=0.4, alpha=0.5))
+            except Exception:
+                pass
+
+    # Seleccion cruzada: al hacer clic en un mapa se resalta el mismo evento
+    # (mismo anillo, tamano y color) tambien en el otro mapa.
+    if scatter is not None:
+        _conectar_seleccion_eventos(
+            fig, ax_planta, scatter, eventos_plot,
+            contraparte=(ax_perfil, eventos_perfil))
+    if scatter_perf is not None:
+        _conectar_seleccion_eventos(
+            fig, ax_perfil, scatter_perf, eventos_perfil,
+            contraparte=(ax_planta, eventos_plot))
+
+    minX = float(sp.min())
+    maxX = float(sp.max())
+    ax_perfil.set_xlim(minX, maxX)
+    ax_perfil.set_ylim(-PROF_MAX_KM, ALT_MAR_KM)
+    ax_perfil.set_xlabel("Distancia a lo largo (km)", fontsize=9,
+                         fontweight='bold')
+    ax_perfil.set_ylabel("Profundidad (km)", fontsize=9, fontweight='bold')
+    ax_perfil.tick_params(axis='both', labelsize=8)
+    ax_perfil.grid(True, linestyle=':', alpha=0.4, color='gray', zorder=0)
+    ax_perfil.set_title("Perfil %s (%.0f-%.0f km | 0-%d km de prof)"
+                        % (perfil["id"], minX, maxX, PROF_MAX_KM),
+                        fontsize=11, fontweight='bold', pad=10)
+    if total_eventos:
+        ax_perfil.legend(loc='upper center', bbox_to_anchor=(0.5, -0.12),
+                         ncol=3, fontsize=8, frameon=True)
+
+    mostrar_json_en_popup("Perfil %s" % perfil["id"], eventos, fuente,
+                          percibidos, total_eventos)
+    plt.tight_layout()
+    _agregar_boton_detener(fig)
+    _indicador_modo_interaccion(fig)
+    plt.show()
+    return percibidos, total_eventos
+
+
+def plotear_ventana(eventos, perfil, fuente, percibidos):
+    """
+    Abre la ventana de un perfil (planta + perfil). Se mantiene este alias
+    para no cambiar el resto del flujo. Devuelve (percibidos, total_eventos).
+    """
+    return plotear_perfil(eventos, perfil, fuente, percibidos)
+
+
+def plotear_sin_perfil(eventos, fuente, percibidos):
+    """Plotea los eventos sin perfil solo sobre la planta."""
+    return plotear_planta(eventos, fuente, perfil=None)
+
+
+def main():
+    if len(sys.argv) < 3:
+        print(__doc__)
+        sys.exit(1)
+
+    archivo = sys.argv[1]
+    fuente = sys.argv[2]
+
+    if not os.path.isfile(archivo):
+        print("Error: no se encontró el archivo '%s'." % archivo)
+        sys.exit(1)
+
+    # abre percibidos.txt SIEMPRE en modo "w" para evitar acumular datos
+    # de ejecuciones anteriores (solo relevante para eventquery)
+    if fuente == "eventquery":
+        with open("percibidos.txt", "w") as f:
+            f.write("id fecha hora latitud longitud prof magnitud tipomag percibido\n")
+
+    with open(archivo) as contenido:
+        eventos = json.load(contenido)
+
+    perfiles = ap.detectar_perfiles()
+    if not perfiles:
+        print("Error: no se detectaron perfiles validos en 'grillas'.")
+        sys.exit(1)
+
+    perfiles_por_id = {p["id"]: p for p in perfiles}
+
+    # agrupa en memoria por perfil
+    grupos = {}
+    sin_perfil = []
+    for evento in eventos:
+        pid = evento.get('perfil')
+        if pid is None:
+            sin_perfil.append(evento)
+        elif pid in perfiles_por_id:
+            grupos.setdefault(pid, []).append(evento)
+        else:
+            sin_perfil.append(evento)
+
+    percibidos = 0
+    total_por_perfil = {}
+
+    for pid in sorted(grupos):
+        if despliegue_detenido():
+            break
+        perfil = perfiles_por_id[pid]
+        _registrar_progreso("Perfil %s de %d"
+                            % (pid, len(grupos)))
+        p, n = plotear_ventana(grupos[pid], perfil, fuente, percibidos)
+        percibidos += p
+        total_por_perfil[pid] = n
+
+    if sin_perfil and not despliegue_detenido():
+        _registrar_progreso("Eventos sin perfil")
+        p, n = plotear_sin_perfil(sin_perfil, fuente, percibidos)
+        percibidos += p
+        total_por_perfil["(sin perfil)"] = n
+
+    if despliegue_detenido():
+        print("Despliegue detenido por el usuario.")
+
+    print("Eventos ploteados:")
+    for pid, n in sorted(total_por_perfil.items()):
+        print("  %s : %d" % (pid, n))
+    if fuente == "eventquery":
+        print("Percibidos:", percibidos)
+
+
+if __name__ == "__main__":
+    main()

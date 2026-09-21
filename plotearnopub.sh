@@ -1,19 +1,15 @@
 #!/usr/bin/bash
 #lear
+SCRIPTS="/home/hriquelmez/Desarrollo"
+PROYECTO="revisapubseisan"
 fuente="seisan"
-python3 /home/hriquelmez/Revision_Local/generajson.py "no_pub_desde_2_5.csv" $fuente
+python3 $SCRIPTS/$PROYECTO/generajson.py "no_pub_desde_2_5_estricto.csv" $fuente
 read -p "¿Desea plotear resultados? S/N : " -n1 respuesta 
 if [ $respuesta = "S" -o $respuesta = "s" ]
 then
     echo -e "\n***** Se mostrarán mapas de perfil y planta *****"
     #python3 /home/hriquelmez/Revision_Local/proc_query_harz_2.py $1 $2
-    ls file*.json > listado.txt
-    while IFS= read -r linea
-    do
-    #python3 /home/hriquelmez/Revision_Local/plotear.py $linea "seisan"
-    python3 /home/hriquelmez/Revision_Local/plotear.py $linea $fuente
-    done < listado.txt
-    rm listado.txt
+    python3 $SCRIPTS/$PROYECTO/plotear.py "eventos_${fuente}.json" $fuente
     if [[ $1 = "eventquery" ]]
     then
         percibidos=0

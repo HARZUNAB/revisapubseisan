@@ -33,14 +33,24 @@ echo -e "\n¿Que datos desea procesar para plotear?"
                     echo -e "\n***** Procesando datos extraidos desde eventquery *****"
                     #python3 /home/hriquelmez/Revision_Local/proc_query_harz_2.py $1 $2
 
-                    ls new_2_*.csv > listadocsv.txt
-                    while IFS= read -r linea
+                    fuente="eventquery"
+                    # concatena todos los new_2_*.csv en uno solo (conservando
+                    # el encabezado) para generar un único JSON por fuente
+                    primera=1
+                    : > todos_eventquery.csv
+                    for linea in new_2_*.csv
                     do
-                        #echo -e $linea
-                        fuente="eventquery"
-                        python3 $SCRIPTS/$PROYECTO/generajson.py $linea $fuente
-                        rm listadocsv.txt
-                    done < listadocsv.txt
+                        [ -f "$linea" ] || continue
+                        if [ $primera = "1" ]
+                        then
+                            cat "$linea" > todos_eventquery.csv
+                            primera=0
+                        else
+                            tail -n +2 "$linea" >> todos_eventquery.csv
+                        fi
+                    done
+                    python3 $SCRIPTS/$PROYECTO/generajson.py "todos_eventquery.csv" $fuente
+                    rm todos_eventquery.csv
                 else
                     if [ $opcion = "3" ]
                     then
@@ -48,7 +58,7 @@ echo -e "\n¿Que datos desea procesar para plotear?"
                         python3 $SCRIPTS/$PROYECTO/revisacollect.py
                         echo -e "\n***** Procesando datos no publicados desde seisan *****"
                         fuente="seisan"
-                        python3 $SCRIPTS/$PROYECTO/generajson.py "no_pub_desde_2_5.csv" $fuente
+                        python3 $SCRIPTS/$PROYECTO/generajson.py "no_pub_desde_2_5_estricto.csv" $fuente
                     else
                         echo -e "\n¡¡¡ Hasta pronto !!!"
                         exit 0
@@ -67,13 +77,7 @@ echo -e "\n¿Que datos desea procesar para plotear?"
     then
         echo -e "\n***** Se mostrarán mapas de perfil y planta *****"
         #python3 /home/hriquelmez/Revision_Local/proc_query_harz_2.py $1 $2
-        ls file*.json > listado.txt
-        while IFS= read -r linea
-        do
-        #python3 /home/hriquelmez/Revision_Local/plotear.py $linea "seisan"
-        python3 $SCRIPTS/$PROYECTO/plotear.py $linea $fuente
-        done < listado.txt
-        rm listado.txt
+        python3 $SCRIPTS/$PROYECTO/plotear.py "eventos_${fuente}.json" $fuente
         if [[ $fuente = "eventquery" ]]
         then
             percibidos=0

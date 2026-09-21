@@ -1,20 +1,13 @@
 #!/usr/bin/bash
 clear
+SCRIPTS="/home/hriquelmez/Desarrollo"
+PROYECTO="revisapubseisan"
 read -p "¿Desea plotear resultados? S/N : " -n1 respuesta 
 if [ $respuesta = "S" -o $respuesta = "s" ]
 then
     echo -e "\n***** Se mostrarán mapas de perfil y planta *****"
     #python3 /home/hriquelmez/Revision_Local/proc_query_harz_2.py $1 $2
-    ls file*.json > listado.txt
-    while IFS= read -r linea
-    do
-    # Código que se ejecuta para cada línea
-    #echo "Archivo fuente: $linea"
-    #fuente="eventquery"
-    #python3 /home/hriquelmez/Revision_Local/plotear.py $linea "eventquery" 
-    python3 /home/hriquelmez/Revision_Local/plotear.py $linea $1
-    done < listado.txt
-    rm listado.txt
+    python3 $SCRIPTS/$PROYECTO/plotear.py "eventos_${1}.json" $1
     if [ $1 = "eventquery" ]
     then
         # Inicializar la variable en el script principal

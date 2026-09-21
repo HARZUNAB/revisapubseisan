@@ -1,0 +1,4 @@
+*.tif
+*.xyz
+*.npy
+__pycache__/
