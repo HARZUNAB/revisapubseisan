@@ -198,6 +198,29 @@ def _color_evento(fuente, evento):
     return COLOR_NO_PERCIBIDO
 
 
+def _handles_eventos(fuente):
+    """
+    Handles de leyenda con los colores de los sismos según fuente.
+    eventquery distingue no percibido/percibido; seisan usa un solo
+    color ("Sismo registrado").
+    """
+    from matplotlib.lines import Line2D
+    if fuente == "eventquery":
+        return [
+            Line2D([0], [0], marker='o', color='w',
+                   markerfacecolor=COLOR_NO_PERCIBIDO, markeredgecolor='black',
+                   markersize=8, label="Sismo no percibido"),
+            Line2D([0], [0], marker='o', color='w',
+                   markerfacecolor=COLOR_PERCIBIDO, markeredgecolor='black',
+                   markersize=8, label="Sismo percibido"),
+        ]
+    return [
+        Line2D([0], [0], marker='o', color='w',
+               markerfacecolor=COLOR_NO_PERCIBIDO, markeredgecolor='black',
+               markersize=8, label="Sismo registrado"),
+    ]
+
+
 def _base_mapa_planta(ax, lon_min, lon_max, lat_min, lat_max):
     """
     Dibuja el fondo de la planta en el axes cartopy: relieve, costas, bordes
@@ -394,78 +417,89 @@ def _texto_extencion(lon_min, lon_max, lat_min, lat_max):
             % (lon_min, lon_max, lat_min, lat_max, round(lon_km), round(lat_km)))
 
 
-def _resaltar_evento(ax, ev, lon=None, lat=None, x_km=None, prof_km=None):
-    """Dibuja un anillo grande resaltando el evento seleccionado."""
-    # Elimina resaltados previos en el mismo axes
+def _texto_parametros_evento(ev):
+    """Texto multilínea con los parámetros del evento para la viñeta."""
+    lineas = [
+        "id: %s" % ev.get('id', ''),
+        "fecha hora: %s" % ev.get('fecha hora', ''),
+        "lat: %s   lon: %s" % (ev.get('latitud', ''), ev.get('longitud', '')),
+        "prof: %s km" % ev.get('prof', ''),
+        "magnitud: %s   tipo: %s" % (ev.get('magnitud', ''), ev.get('tipo', '')),
+    ]
+    if 'percibido' in ev:
+        lineas.append("percibido: %s" % ev['percibido'])
+    if ev.get('analista'):
+        lineas.append("analista: %s" % ev['analista'])
+    if ev.get('perfil') is not None:
+        lineas.append("perfil: %s   along: %s km"
+                      % (ev.get('perfil'), ev.get('along_km', '')))
+    return "\n".join(lineas)
+
+
+def _resaltar_evento(ax, ev, lon=None, lat=None, x_km=None, prof_km=None,
+                     anotar=True):
+    """
+    Dibuja un anillo grande resaltando el evento seleccionado y, si 'anotar',
+    una viñeta con sus parámetros cerca del círculo.
+    """
+    # Elimina resaltados y viñetas previos en el mismo axes
     for coll in list(ax.collections):
         if getattr(coll, '_es_resaltado', False):
             coll.remove()
+    for t in list(ax.texts):
+        if getattr(t, '_es_anotacion', False):
+            t.remove()
+
+    contenido = _texto_parametros_evento(ev)
+
     if lon is not None and lat is not None:
         sc = ax.scatter([lon], [lat], s=220, facecolors='none',
                         edgecolors='red', linewidths=2.5, zorder=12,
                         transform=ccrs.PlateCarree(), picker=False)
+        if anotar:
+            anot = ax.annotate(
+                contenido, xy=(lon, lat), xytext=(20, -20),
+                textcoords='offset points', fontsize=8, color='black',
+                bbox=dict(boxstyle='round,pad=0.4', fc='lightyellow',
+                          ec='navy', alpha=0.95),
+                arrowprops=dict(arrowstyle='-', color='navy', lw=0.8),
+                zorder=13, clip_on=False, transform=ccrs.PlateCarree())
     elif x_km is not None and prof_km is not None:
         sc = ax.scatter([x_km], [prof_km], s=220, facecolors='none',
                         edgecolors='red', linewidths=2.5, zorder=12,
                         picker=False)
+        if anotar:
+            anot = ax.annotate(
+                contenido, xy=(x_km, prof_km), xytext=(20, -20),
+                textcoords='offset points', fontsize=8, color='black',
+                bbox=dict(boxstyle='round,pad=0.4', fc='lightyellow',
+                          ec='navy', alpha=0.95),
+                arrowprops=dict(arrowstyle='-', color='navy', lw=0.8),
+                zorder=13, clip_on=False)
     else:
         return
     sc._es_resaltado = True
+    if anotar:
+        anot._es_anotacion = True
 
 
-def _mostrar_popup_evento(ev):
-    """Muestra el JSON de un evento en un popup Toplevel.
+def _resaltar_en_axes(ax, ev, anotar=False):
+    """Resalta 'ev' en 'ax' (planta cartopy o perfil rectilineo).
 
-    El popup se redimensiona al minimo necesario para mostrar todo el contendido
-    sin barras de scroll (no se desperdicia espacio). El texto es de solo
-    lectura pero seleccionable, para poder copiar los parametros del evento.
-    Cierra el popup de evento anterior (si sigue abierto) para no acumular
-    ventanas con parametros de eventos seleccionados.
+    'anotar' controla si además del anillo se dibuja la viñeta con los
+    parámetros del evento (solo en el mapa clicado).
     """
-    global _popup_evento
-    try:
-        import tkinter as tk
-        from tkinter import font as tkfont
-    except Exception:
-        return
-    raiz = _raiz_tk()
-    if raiz is None:
-        return
-    if _popup_evento is not None:
-        try:
-            if _popup_evento.winfo_exists():
-                _popup_evento.destroy()
-        except Exception:
-            pass
-        _popup_evento = None
-    contenido = json.dumps(ev, indent=4, ensure_ascii=False)
-    popup = tk.Toplevel(raiz)
-    popup.title("Evento %s - %s" % (ev.get('id', ''), ev.get('fecha hora', '')))
-    txt = tk.Text(popup, wrap="none", font=("Consolas", 10), padx=8, pady=8,
-                  borderwidth=0, highlightthickness=0, cursor="arrow")
-    txt.pack(fill="both", expand=True)
-    txt.insert(tk.INSERT, contenido)
-    txt.config(state=tk.DISABLED)
-    fuente = tkfont.Font(font=("Consolas", 10))
-    ancho_px = max(fuente.measure(linea) for linea in contenido.split("\n"))
-    alto_px = fuente.metrics("linespace") * (contenido.count("\n") + 1)
-    popup.update_idletasks()
-    popup.geometry("%dx%d" % (ancho_px + 20, alto_px + 20))
-    _popup_evento = popup
-
-
-def _resaltar_en_axes(ax, ev):
-    """Resalta 'ev' en 'ax' (planta cartopy o perfil rectilineo)."""
     if ax.name.startswith('cartopy'):
         try:
             _resaltar_evento(ax, ev, lon=float(ev['longitud']),
-                             lat=float(ev['latitud']))
+                             lat=float(ev['latitud']), anotar=anotar)
         except (TypeError, ValueError, KeyError):
             pass
     else:
         try:
             _resaltar_evento(ax, ev, x_km=float(ev.get('along_km')),
-                             prof_km=float(ev['prof']) * -1)
+                             prof_km=float(ev['prof']) * -1,
+                             anotar=anotar)
         except (TypeError, ValueError, KeyError):
             pass
 
@@ -486,14 +520,15 @@ def _buscar_mismo_evento(ev, lista):
 def _conectar_seleccion_eventos(fig, ax, scatter, eventos_plot,
                                 contraparte=None):
     """
-    Conecta clics sobre un scatter para resaltar y mostrar JSON.
+    Conecta clics sobre un scatter para resaltar un evento y mostrar su
+    viñeta de parámetros.
 
     Usa deteccion propia (scatter.contains) en button_press/button_release,
     independiente del widgetlock del toolbar: la seleccion funciona tambien
     mientras el modo zoom/pan esta activo (matplotlib ignora los clics simples
     de < 5 px en esos modos, asi no hay conflicto). Si 'contraparte' es
     (ax2, eventos2), resalta el mismo evento en el otro mapa con el mismo
-    anillo (mismo tamano y color).
+    anillo (mismo tamano y color); la viñeta solo aparece en el mapa clicado.
     """
     presion = {'x': None, 'y': None}
 
@@ -524,7 +559,7 @@ def _conectar_seleccion_eventos(fig, ax, scatter, eventos_plot,
         if idx >= len(eventos_plot):
             return
         ev = eventos_plot[idx]
-        _resaltar_en_axes(ax, ev)
+        _resaltar_en_axes(ax, ev, anotar=True)
         if contraparte is not None:
             ax2, eventos2 = contraparte
             if ax2 is not None:
@@ -532,7 +567,6 @@ def _conectar_seleccion_eventos(fig, ax, scatter, eventos_plot,
                 if ev2 is not None:
                     _resaltar_en_axes(ax2, ev2)
         fig.canvas.draw_idle()
-        _mostrar_popup_evento(ev)
 
     fig.canvas.mpl_connect('button_press_event', on_press)
     fig.canvas.mpl_connect('button_release_event', on_release)
@@ -569,7 +603,6 @@ def mostrar_json_en_popup(nombre, eventos, fuente, percibidos, total_eventos):
 
 _detener_despliegue = False
 _progreso = ""
-_popup_evento = None
 
 
 def _registrar_progreso(texto):
@@ -603,15 +636,8 @@ def _agregar_boton_detener(fig):
 
 def detener():
     """Detiene el despliegue cerrando todas las figuras abiertas."""
-    global _detener_despliegue, _popup_evento
+    global _detener_despliegue
     _detener_despliegue = True
-    try:
-        if _popup_evento is not None:
-            if _popup_evento.winfo_exists():
-                _popup_evento.destroy()
-    except Exception:
-        pass
-    _popup_evento = None
     try:
         plt.close('all')
     except Exception:
@@ -745,11 +771,12 @@ def _indicador_modo_interaccion(fig):
     _refrescar()
 
 
-def plotear_planta(eventos, fuente, perfil=None):
+def plotear_planta(eventos, fuente, perfil=None, n_asignados=None, totales=None):
     """
     Crea una ventana con la vista en planta (relieve + localidades + eventos).
     Si se pasa 'perfil', el área visible se deriva del recorrido del slab;
     si no (eventos sin perfil), se usa la extensión de los propios eventos.
+    n_asignados/totales: conteos de generajson.py para mostrar en la ventana.
     Devuelve (percibidos, total_eventos).
     """
     total_eventos = 0
@@ -783,23 +810,40 @@ def plotear_planta(eventos, fuente, perfil=None):
     _base_mapa_planta(ax, lon_min, lon_max, lat_min, lat_max)
     _localidades_planta(ax, lon_min, lon_max, lat_min, lat_max)
     scatter, eventos_plot = _marcadores_planta(ax, eventos, fuente)
+    ax.legend(handles=_handles_eventos(fuente), loc='lower left',
+              fontsize=8, frameon=True)
     if scatter is not None:
         _conectar_seleccion_eventos(fig, ax, scatter, eventos_plot)
     ax.set_title("%s\n%s" % (titulo, subtitulo), fontsize=11,
                  fontweight='bold', pad=10)
     mostrar_json_en_popup(nombre_popup, eventos, fuente, percibidos,
                           total_eventos)
-    plt.tight_layout()
+    if n_asignados is None:
+        n_asignados = total_eventos
+    sufijo = ""
+    if fuente == "eventquery" and percibidos:
+        sufijo = " — %d percibidos" % percibidos
+    if totales:
+        fig.suptitle("%s — %d eventos asignados (de %d totales)%s"
+                     % (nombre_popup, n_asignados, totales, sufijo),
+                     fontsize=12, fontweight='bold', y=0.98)
+    elif n_asignados:
+        fig.suptitle("%s — %d eventos asignados%s"
+                     % (nombre_popup, n_asignados, sufijo),
+                     fontsize=12, fontweight='bold', y=0.98)
+    plt.tight_layout(rect=[0, 0, 1, 0.94])
     _agregar_boton_detener(fig)
     _indicador_modo_interaccion(fig)
     plt.show()
     return percibidos, total_eventos
 
 
-def plotear_perfil(eventos, perfil, fuente, percibidos):
+def plotear_perfil(eventos, perfil, fuente, percibidos, n_asignados=None,
+                   totales=None):
     """
     Crea una figura con dos subplots: vista en planta (izquierda) y perfil
     de subducción (derecha), con etiquetas de id y selección interactiva.
+    n_asignados/totales: conteos de generajson.py para mostrar en la ventana.
     Devuelve (percibidos, total_eventos).
     """
     total_eventos = 0
@@ -924,29 +968,49 @@ def plotear_perfil(eventos, perfil, fuente, percibidos):
                         % (perfil["id"], minX, maxX, PROF_MAX_KM),
                         fontsize=11, fontweight='bold', pad=10)
     if total_eventos:
-        ax_perfil.legend(loc='upper center', bbox_to_anchor=(0.5, -0.12),
+        handles, labels = ax_perfil.get_legend_handles_labels()
+        handles.extend(_handles_eventos(fuente))
+        ax_perfil.legend(handles=handles, loc='upper center',
+                         bbox_to_anchor=(0.5, -0.12),
                          ncol=3, fontsize=8, frameon=True)
 
     mostrar_json_en_popup("Perfil %s" % perfil["id"], eventos, fuente,
                           percibidos, total_eventos)
-    plt.tight_layout()
+    if n_asignados is None:
+        n_asignados = total_eventos
+    sufijo = ""
+    if fuente == "eventquery" and percibidos:
+        sufijo = " — %d percibidos" % percibidos
+    if totales:
+        fig.suptitle("Perfil %s — %d eventos asignados (de %d totales)%s"
+                     % (perfil["id"], n_asignados, totales, sufijo),
+                     fontsize=12, fontweight='bold', y=0.98)
+    else:
+        fig.suptitle("Perfil %s — %d eventos asignados%s"
+                     % (perfil["id"], n_asignados, sufijo),
+                     fontsize=12, fontweight='bold', y=0.98)
+    plt.tight_layout(rect=[0, 0, 1, 0.94])
     _agregar_boton_detener(fig)
     _indicador_modo_interaccion(fig)
     plt.show()
     return percibidos, total_eventos
 
 
-def plotear_ventana(eventos, perfil, fuente, percibidos):
+def plotear_ventana(eventos, perfil, fuente, percibidos, n_asignados=None,
+                    totales=None):
     """
     Abre la ventana de un perfil (planta + perfil). Se mantiene este alias
     para no cambiar el resto del flujo. Devuelve (percibidos, total_eventos).
     """
-    return plotear_perfil(eventos, perfil, fuente, percibidos)
+    return plotear_perfil(eventos, perfil, fuente, percibidos,
+                          n_asignados, totales)
 
 
-def plotear_sin_perfil(eventos, fuente, percibidos):
+def plotear_sin_perfil(eventos, fuente, percibidos, n_asignados=None,
+                       totales=None):
     """Plotea los eventos sin perfil solo sobre la planta."""
-    return plotear_planta(eventos, fuente, perfil=None)
+    return plotear_planta(eventos, fuente, perfil=None,
+                          n_asignados=n_asignados, totales=totales)
 
 
 def main():
@@ -966,6 +1030,20 @@ def main():
     if fuente == "eventquery":
         with open("percibidos.txt", "w") as f:
             f.write("id fecha hora latitud longitud prof magnitud tipomag percibido\n")
+
+    # Carga el conteo por perfil que generajson.py dejó en
+    # conteo_perfiles_<fuente>.json para mostrarlo a medida que se plotea.
+    conteo_por_perfil = {}
+    conteo_total = None
+    conteo_archivo = 'conteo_perfiles_%s.json' % fuente
+    if os.path.isfile(conteo_archivo):
+        try:
+            with open(conteo_archivo) as f:
+                datos_conteo = json.load(f)
+            conteo_por_perfil = datos_conteo.get('conteo', {})
+            conteo_total = datos_conteo.get('total')
+        except Exception:
+            pass
 
     with open(archivo) as contenido:
         eventos = json.load(contenido)
@@ -998,13 +1076,17 @@ def main():
         perfil = perfiles_por_id[pid]
         _registrar_progreso("Perfil %s de %d"
                             % (pid, len(grupos)))
-        p, n = plotear_ventana(grupos[pid], perfil, fuente, percibidos)
+        p, n = plotear_ventana(grupos[pid], perfil, fuente, percibidos,
+                               n_asignados=conteo_por_perfil.get(pid),
+                               totales=conteo_total)
         percibidos += p
         total_por_perfil[pid] = n
 
     if sin_perfil and not despliegue_detenido():
         _registrar_progreso("Eventos sin perfil")
-        p, n = plotear_sin_perfil(sin_perfil, fuente, percibidos)
+        p, n = plotear_sin_perfil(sin_perfil, fuente, percibidos,
+                                  n_asignados=conteo_por_perfil.get("(sin perfil)"),
+                                  totales=conteo_total)
         percibidos += p
         total_por_perfil["(sin perfil)"] = n
 

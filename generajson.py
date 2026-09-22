@@ -125,9 +125,19 @@ def procesar_csv(archivo_csv, fuente, umbral=None, k_peso=None):
     if sin_perfil:
         print('Eventos sin perfil (se plotearán solo en planta):', sin_perfil)
     print('Distribución por perfil:')
+    conteo_labels = {}
     for per in sorted(conteo, key=lambda x: (x is None, '' if x is None else x)):
         label = per if per is not None else '(sin perfil)'
+        conteo_labels[label] = conteo[per]
         print('  %-12s %d' % (label, conteo[per]))
+
+    # Guarda el conteo para que plotear.py lo muestre a medida que plotea
+    conteo_json = 'conteo_perfiles_%s.json' % fuente
+    with open(conteo_json, 'w') as f:
+        json.dump({'total': total_eventos,
+                   'con_perfil': with_perfil,
+                   'sin_perfil': sin_perfil,
+                   'conteo': conteo_labels}, f, indent=4)
 
     return total_eventos, with_perfil, sin_perfil
 
