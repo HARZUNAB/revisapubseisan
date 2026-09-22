@@ -20,7 +20,8 @@ Uso:
 
 Salida:
     eventos_<fuente>.json    (lista de eventos con sus campos originales más
-    "perfil", "along_km", "perp_km", "residuo_km" y "dist_asoc")
+    "perfil", "along_km", "perp_km", "residuo_km" y "dist_asoc", y las
+    claves de trazabilidad "archivo_origen" y "n_fila_origen")
 """
 
 import csv
@@ -30,6 +31,7 @@ import os
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import asigna_perfiles as ap
+import sismicidad
 
 
 def parsear_extra_args(args):
@@ -55,6 +57,7 @@ def procesar_csv(archivo_csv, fuente, umbral=None, k_peso=None):
         k_peso = ap.K_PESO_PROFUNDIDAD
 
     eventos = []
+    archivo_origen = os.path.basename(archivo_csv)
 
     with open(archivo_csv, 'r', newline='') as csvfile:
         lector_csv = csv.reader(csvfile)
@@ -94,12 +97,20 @@ def procesar_csv(archivo_csv, fuente, umbral=None, k_peso=None):
                     'percibido': fila[8] if len(fila) > 8 else "",
                 }
 
+            evento['archivo_origen'] = archivo_origen
+            evento['n_fila_origen'] = int(fila[0])
             evento['lon'] = longitud
             evento['lat'] = latitud
             eventos.append(evento)
 
     # Asigna perfil a cada evento (incluye la profundidad en la métrica)
     eventos = ap.asignar_eventos(eventos, umbral=umbral, k_peso=k_peso)
+
+    # Decide si cada evento ploteado podría estar mal localizado (sospechoso)
+    # usando el slab y la sismicidad histórica local. La sismicidad histórica
+    # jamás se evalúa; solo se usa como referencia.
+    for ev in eventos:
+        ev['sospechoso'] = sismicidad.es_sospechoso(ev)
 
     # Elimina claves auxiliares usadas por el asignador
     for ev in eventos:
@@ -109,6 +120,42 @@ def procesar_csv(archivo_csv, fuente, umbral=None, k_peso=None):
     salida_json = 'eventos_%s.json' % fuente
     with open(salida_json, 'w') as jsonfile:
         json.dump(eventos, jsonfile, indent=4)
+
+    # Lista de eventos que podrían estar mal localizados (sospechosos)
+    sospechosos_csv = 'sospechosos_%s.csv' % fuente
+    with open(sospechosos_csv, 'w', newline='') as csvfile:
+        escritor = csv.writer(csvfile)
+        escritor.writerow(['id', 'fecha hora', 'latitud', 'longitud', 'prof',
+                           'perfil', 'perp_km', 'residuo_km', 'dist_asoc',
+                           'd_knn_km', 'vecinos_ventana', 'criterios',
+                           'archivo_origen', 'n_fila_origen'])
+        for ev in eventos:
+            if ev.get('sospechoso'):
+                eva = sismicidad.evaluar(ev)
+                m = eva.get('metricas', {})
+                # Criterios disparados (para diagnóstico)
+                grupo_de = {}
+                for g, nombres in sismicidad.CRITERIOS_SOSPECHOSO.get(
+                        "grupos", {}).items():
+                    for n in nombres:
+                        grupo_de[n] = g
+                criterios = "; ".join(
+                    "%s:%s" % (g, ",".join(n for n, v in eva['pruebas'].items()
+                                           if v and grupo_de.get(n) == g))
+                    for g in eva.get('grupos', {})
+                    if eva['grupos'][g]['cumplido'])
+                escritor.writerow([ev.get('id'), ev.get('fecha hora'),
+                                   ev.get('latitud'), ev.get('longitud'),
+                                   ev.get('prof'), ev.get('perfil'),
+                                   ev.get('perp_km'), ev.get('residuo_km'),
+                                   ev.get('dist_asoc'),
+                                   m.get('d_knn_km'), m.get('vecinos_ventana'),
+                                   criterios,
+                                   ev.get('archivo_origen'),
+                                   ev.get('n_fila_origen')])
+                # Diagnóstico en consola: por qué se marcó cada sospechoso
+                print("  [sospechoso] %s"
+                      % sismicidad.explicar_sospechoso(ev))
 
     total_eventos = len(eventos)
     with_perfil = sum(1 for ev in eventos if ev.get('perfil') is not None)
@@ -122,6 +169,10 @@ def procesar_csv(archivo_csv, fuente, umbral=None, k_peso=None):
 
     print('Total de eventos:', total_eventos)
     print('Eventos con perfil:', with_perfil)
+    n_sospechosos = sum(1 for ev in eventos if ev.get('sospechoso'))
+    if n_sospechosos:
+        print('Eventos posiblemente mal localizados: %d (ver %s)'
+              % (n_sospechosos, sospechosos_csv))
     if sin_perfil:
         print('Eventos sin perfil (se plotearán solo en planta):', sin_perfil)
     print('Distribución por perfil:')

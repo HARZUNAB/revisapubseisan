@@ -278,6 +278,10 @@ def asignar_perfil_evento(lon, lat, prof,
         perp_km     : distancia perpendicular epicentro-perfil (km)
         residuo_km  : |prof - slab(along)| en km (None si slab sin cobertura)
         dist_asoc   : índice de asociación (km)
+
+    La determinación de "sospechoso" (posible mal localizado) no se hace aquí;
+    vive en sismicidad.es_sospechoso(), que recibe estos parámetros y aplica
+    los criterios configurables (slab + sismicidad histórica).
     """
     mejor = None  # (dist_asoc, perfil_id, along, perp, residuo)
 
@@ -305,8 +309,9 @@ def asignar_perfil_evento(lon, lat, prof,
 
     dist_asoc, perfil_id, along, perp, residuo = mejor
     if dist_asoc > umbral:
+        # Excede el umbral de asociación: queda sin perfil.
         return {"perfil": None, "along_km": None, "perp_km": None,
-                "residuo_km": None, "dist_asoc": None}
+                "residuo_km": None, "dist_asoc": round(dist_asoc, 3)}
 
     return {
         "perfil": perfil_id,

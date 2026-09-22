@@ -75,12 +75,23 @@ RESOLUCION_RELIEVE_PLANTA = 500
 # NIVEL_GEO = "50m" coastlines y bordes de países.
 NIVEL_GEO = "50m"
 
-# COLOR_PERCIBIDO: color de los eventos percibidos (fuente eventquery, campo
-# percibido="S"). Puede ser nombre o código hexadecimal.
-COLOR_PERCIBIDO = "tomato"
+# COLOR_PERCIBIDO: color de relleno de los eventos percibidos (fuente
+# eventquery, campo percibido="S"). Puede ser nombre o código hexadecimal.
+COLOR_PERCIBIDO = "#c00000"
 
-# COLOR_NO_PERCIBIDO: color del resto de los eventos (no percibidos o seisan).
+# COLOR_NO_PERCIBIDO: color de relleno del resto de los eventos (no
+# percibidos o seisan).
 COLOR_NO_PERCIBIDO = "teal"
+
+# COLOR_BORDE_SOSPECHOSO: color del borde de los eventos marcados como
+# posiblemente mal localizados (campo sospechoso=True de generajson.py).
+# El relleno conserva el color por percibido/no percibido; el borde violeta
+# marca la sospecha sin tapar esa información.
+COLOR_BORDE_SOSPECHOSO = "#7a1fa2"
+
+# COLOR_RESALTADO: color del anillo que indica el evento seleccionado con un
+# clic en el mapa (no se usa para clasificar eventos).
+COLOR_RESALTADO = "#00b4d8"
 
 # COLOR_SLAB: color de la línea del slab en el perfil.
 COLOR_SLAB = "black"
@@ -130,6 +141,26 @@ ARCHIVO_TIF_LOCAL = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 # sus coordenadas, usado para marcar pueblos cercanos en la planta.
 ARCHIVO_LOCALIDADES = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                    "localidades.csv")
+
+# ARCHIVO_SISMICIDAD: catálogo de sismicidad histórica validada (solo
+# referencia: fondo contextual en los mapas y estadísticas locales de
+# clasificación en sismicidad.py). El catálogo jamás se clasifica.
+ARCHIVO_SISMICIDAD = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  "base_2020_2026.dat")
+
+# Parámetros visuales del fondo de sismicidad histórica (gris tenue uniforme).
+HIST_COLOR = "0.55"
+HIST_S = 8
+HIST_S_PERFIL = 8
+HIST_ALPHA = 0.35
+
+# HIST_MAX_PERP_PROF_KM: solo se proyectan al perfil los eventos históricos
+# dentro de esta distancia perpendicular (km) a la línea central del perfil,
+# para no saturar el gráfico con eventos lejanos de la franja.
+HIST_MAX_PERP_PROF_KM = 40.0
+
+# Histórico: etiqueta de leyenda para el fondo de sismicidad histórica.
+HIST_LABEL = "Sismicidad histórica 2020-2026"
 
 
 # Constantes de la proyección local del recorte relieve_chile.tif (igual que
@@ -192,33 +223,215 @@ def _cargar_relieve_planta(lon_min, lon_max, lat_min, lat_max):
 
 
 def _color_evento(fuente, evento):
-    """Define el color del evento según fuente y percibido."""
+    """
+    Color de RELLENO del evento según fuente y percibido. La sospecha (borde
+    violeta) se maneja aparte como atributo del marcador, de modo que un
+    evento sospechoso conserva su relleno de percibido/no percibido.
+    """
     if fuente == "eventquery" and evento.get('percibido') == "S":
         return COLOR_PERCIBIDO
     return COLOR_NO_PERCIBIDO
+
+
+def _bordes_eventos(eventos):
+    """Edgecolors y grosores de borde por evento en el mismo orden."""
+    bordes = []
+    grosores = []
+    for ev in eventos:
+        sospechoso = bool(ev.get('sospechoso'))
+        bordes.append(COLOR_BORDE_SOSPECHOSO if sospechoso else 'black')
+        grosores.append(2.2 if sospechoso else 1.2)
+    return bordes, grosores
 
 
 def _handles_eventos(fuente):
     """
     Handles de leyenda con los colores de los sismos según fuente.
     eventquery distingue no percibido/percibido; seisan usa un solo
-    color ("Sismo registrado").
+    color ("Sismo registrado"). Ambos incluyen la sospecha (borde violeta,
+    relleno según percibido/no percibido) y el anillo de selección.
     """
     from matplotlib.lines import Line2D
+    handle_sospechoso = Line2D([0], [0], marker='o', color='w',
+                               markerfacecolor=COLOR_NO_PERCIBIDO,
+                               markeredgecolor=COLOR_BORDE_SOSPECHOSO,
+                               markeredgewidth=2.2, markersize=8,
+                               label="Sospechoso (borde violeta)")
+    handle_seleccion = Line2D([0], [0], marker='o', color='w',
+                              markerfacecolor='none',
+                              markeredgecolor=COLOR_RESALTADO,
+                              markeredgewidth=2.2, markersize=8,
+                              label="Evento seleccionado")
     if fuente == "eventquery":
-        return [
+        handles = [
             Line2D([0], [0], marker='o', color='w',
                    markerfacecolor=COLOR_NO_PERCIBIDO, markeredgecolor='black',
                    markersize=8, label="Sismo no percibido"),
             Line2D([0], [0], marker='o', color='w',
                    markerfacecolor=COLOR_PERCIBIDO, markeredgecolor='black',
                    markersize=8, label="Sismo percibido"),
+            handle_sospechoso,
+            handle_seleccion,
         ]
-    return [
-        Line2D([0], [0], marker='o', color='w',
-               markerfacecolor=COLOR_NO_PERCIBIDO, markeredgecolor='black',
-               markersize=8, label="Sismo registrado"),
-    ]
+    else:
+        handles = [
+            Line2D([0], [0], marker='o', color='w',
+                   markerfacecolor=COLOR_NO_PERCIBIDO, markeredgecolor='black',
+                   markersize=8, label="Sismo registrado"),
+            handle_sospechoso,
+            handle_seleccion,
+        ]
+    return handles
+
+
+# =========================================================================
+# FONDO DE SISMICIDAD HISTÓRICA (base_2023_2026.dat, solo referencia)
+# =========================================================================
+
+_cache_sismicidad = None
+_cache_hist_perfil = {}
+
+
+def _cargar_sismicidad():
+    """
+    Lee el catálogo histórico (tab-separado; cols 1=lat, 2=lon, 3=prof, 4=mag)
+    y lo guarda en caché de módulo. Devuelve (lats, lons, profs) o None si el
+    archivo no existe o no tiene eventos válidos. Es SOLO fondo/referencia:
+    estos eventos no se clasifican como sospechosos.
+    """
+    global _cache_sismicidad
+    if _cache_sismicidad is not None:
+        return _cache_sismicidad
+    if not os.path.isfile(ARCHIVO_SISMICIDAD):
+        _cache_sismicidad = None
+        return None
+
+    lats, lons, profs = [], [], []
+    with open(ARCHIVO_SISMICIDAD, encoding='utf-8') as f:
+        for linea in f:
+            partes = linea.strip().split('\t')
+            if len(partes) < 7:
+                continue
+            try:
+                lats.append(float(partes[1]))
+                lons.append(float(partes[2]))
+                profs.append(float(partes[3]))
+            except ValueError:
+                continue
+
+    if not lats:
+        _cache_sismicidad = None
+        return None
+    _cache_sismicidad = (np.array(lats), np.array(lons), np.array(profs))
+    return _cache_sismicidad
+
+
+def _handle_sismicidad():
+    """Handle de leyenda para el fondo de sismicidad histórica."""
+    from matplotlib.lines import Line2D
+    return Line2D([0], [0], marker='o', color='w',
+                  markerfacecolor=HIST_COLOR, markeredgecolor='none',
+                  markersize=6, label=HIST_LABEL)
+
+
+def _sismicidad_planta(ax, lon_min, lon_max, lat_min, lat_max):
+    """
+    Dibuja el fondo de sismicidad histórica en la vista en planta (gris tenue,
+    zorder=1), filtrando por la extensión visible.
+    """
+    datos = _cargar_sismicidad()
+    if datos is None:
+        return
+    lats, lons, profs = datos
+    mask = ((lons >= lon_min) & (lons <= lon_max) &
+            (lats >= lat_min) & (lats <= lat_max))
+    if not np.any(mask):
+        return
+    ax.scatter(lons[mask], lats[mask], s=HIST_S, color=HIST_COLOR,
+               alpha=HIST_ALPHA, linewidths=0, zorder=1, rasterized=True,
+               transform=ccrs.PlateCarree())
+
+
+def _proyectar_hist_perfil(lons, lats, profs, perfil):
+    """
+    Proyección vectorizada de los eventos históricos a un perfil: posición a
+    lo largo (km) y distancia perpendicular (km), replicando la geometría de
+    ap.distancia_al_perfil sobre todo el catálogo a la vez (loop por tramo,
+    numpy escalar por punto). Devuelve (alongs, profs_neg) con los eventos
+    dentro de HIST_MAX_PERP_PROF_KM (listas vacías si el perfil no sirve).
+    """
+    slab = perfil["slab"]
+    lon_c = slab["lon"]
+    lat_c = slab["lat"]
+    p_c = slab["p"]
+    if len(lon_c) < 2:
+        return [], []
+    lon_c = np.asarray(lon_c, dtype=float)
+    lat_c = np.asarray(lat_c, dtype=float)
+    p_c = np.asarray(p_c, dtype=float)
+    lon_ref = float(np.nanmean(lon_c))
+    lat_ref = float(np.nanmean(lat_c))
+
+    x_c, y_c = ap._proyectar_a_plano(lon_c, lat_c, lon_ref, lat_ref)
+    x_p, y_p = ap._proyectar_a_plano(np.asarray(lons, dtype=float),
+                                     np.asarray(lats, dtype=float),
+                                     lon_ref, lat_ref)
+    x_p = np.asarray(x_p, dtype=float)
+    y_p = np.asarray(y_p, dtype=float)
+
+    dx = np.diff(x_c)
+    dy = np.diff(y_c)
+    seg_len2 = dx * dx + dy * dy
+    n = x_p.shape[0]
+    mejor = np.full(n, np.inf)
+    mejor_i = np.zeros(n, dtype=np.intp)
+    for i in range(dx.shape[0]):
+        vx = x_p - x_c[i]
+        vy = y_p - y_c[i]
+        t = (vx * dx[i] + vy * dy[i]) / np.where(seg_len2[i] > 0,
+                                                 seg_len2[i], 1.0)
+        t = np.clip(t, 0.0, 1.0)
+        fx = x_c[i] + t * dx[i]
+        fy = y_c[i] + t * dy[i]
+        d2 = (x_p - fx) ** 2 + (y_p - fy) ** 2
+        idx = d2 < mejor
+        if idx.any():
+            mejor[idx] = d2[idx]
+            mejor_i[idx] = i
+
+    perp = np.sqrt(mejor)
+    mask = perp <= HIST_MAX_PERP_PROF_KM
+    if not mask.any():
+        return [], []
+    i = mejor_i[mask]
+    seg_len2_i = np.where(seg_len2[i] > 0, seg_len2[i], 1.0)
+    tm = np.clip(((x_p[mask] - x_c[i]) * dx[i] +
+                  (y_p[mask] - y_c[i]) * dy[i]) / seg_len2_i, 0.0, 1.0)
+    along = p_c[i] + tm * (p_c[i + 1] - p_c[i])
+    profs_neg = -np.asarray(profs, dtype=float)[mask]
+    return along.tolist(), profs_neg.tolist()
+
+
+def _sismicidad_perfil(ax_perfil, perfil):
+    """
+    Dibuja el fondo de sismicidad histórica en el perfil (derecha): proyecta
+    el catálogo al perfil (según la perpendicular al slab) y plotea los que
+    quedan dentro de HIST_MAX_PERP_PROF_KM. Usa caché por perfil.
+    """
+    datos = _cargar_sismicidad()
+    if datos is None:
+        return
+    clave = perfil["id"]
+    if clave in _cache_hist_perfil:
+        alongs, profs_neg = _cache_hist_perfil[clave]
+    else:
+        lats, lons, profs = datos
+        alongs, profs_neg = _proyectar_hist_perfil(lons, lats, profs, perfil)
+        _cache_hist_perfil[clave] = (alongs, profs_neg)
+    if alongs:
+        ax_perfil.scatter(alongs, profs_neg, s=HIST_S_PERFIL, color=HIST_COLOR,
+                          alpha=HIST_ALPHA, linewidths=0, zorder=1,
+                          rasterized=True)
 
 
 def _base_mapa_planta(ax, lon_min, lon_max, lat_min, lat_max):
@@ -275,8 +488,9 @@ def _marcadores_planta(ax, eventos, fuente):
     lats = [float(e['latitud']) for e in eventos_plot]
 
     colores = [_color_evento(fuente, e) for e in eventos_plot]
+    bordes, grosores = _bordes_eventos(eventos_plot)
     scatter = ax.scatter(lons, lats, s=60, c=colores, alpha=0.95,
-                         edgecolors='black', linewidth=1.2, zorder=5,
+                         edgecolors=bordes, linewidths=grosores, zorder=5,
                          transform=ccrs.PlateCarree(), picker=True,
                          pickradius=6)
 
@@ -454,7 +668,7 @@ def _resaltar_evento(ax, ev, lon=None, lat=None, x_km=None, prof_km=None,
 
     if lon is not None and lat is not None:
         sc = ax.scatter([lon], [lat], s=220, facecolors='none',
-                        edgecolors='red', linewidths=2.5, zorder=12,
+                        edgecolors=COLOR_RESALTADO, linewidths=2.5, zorder=12,
                         transform=ccrs.PlateCarree(), picker=False)
         if anotar:
             anot = ax.annotate(
@@ -466,7 +680,7 @@ def _resaltar_evento(ax, ev, lon=None, lat=None, x_km=None, prof_km=None,
                 zorder=13, clip_on=False, transform=ccrs.PlateCarree())
     elif x_km is not None and prof_km is not None:
         sc = ax.scatter([x_km], [prof_km], s=220, facecolors='none',
-                        edgecolors='red', linewidths=2.5, zorder=12,
+                        edgecolors=COLOR_RESALTADO, linewidths=2.5, zorder=12,
                         picker=False)
         if anotar:
             anot = ax.annotate(
@@ -612,12 +826,13 @@ def _registrar_progreso(texto):
 
 
 def _agregar_boton_detener(fig):
-    """Añade un botón pequeño 'Detener' centrado abajo en la ventana del mapa."""
+    """Añade un botón pequeño 'Detener' en el extremo derecho inferior de la
+    ventana del mapa, fuera del área de la leyenda."""
     try:
         from matplotlib.widgets import Button
     except Exception:
         return
-    ax_btn = fig.add_axes([0.46, 0.012, 0.08, 0.04])
+    ax_btn = fig.add_axes([0.905, 0.012, 0.08, 0.04])
     for s in ax_btn.spines.values():
         s.set_visible(False)
     ax_btn.set_xticks([])
@@ -808,10 +1023,10 @@ def plotear_planta(eventos, fuente, perfil=None, n_asignados=None, totales=None)
     fig = plt.figure(figsize=FIG_SIZE, dpi=DPI)
     ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
     _base_mapa_planta(ax, lon_min, lon_max, lat_min, lat_max)
+    _sismicidad_planta(ax, lon_min, lon_max, lat_min, lat_max)
     _localidades_planta(ax, lon_min, lon_max, lat_min, lat_max)
     scatter, eventos_plot = _marcadores_planta(ax, eventos, fuente)
-    ax.legend(handles=_handles_eventos(fuente), loc='lower left',
-              fontsize=8, frameon=True)
+    handles_leyenda = _handles_eventos(fuente) + [_handle_sismicidad()]
     if scatter is not None:
         _conectar_seleccion_eventos(fig, ax, scatter, eventos_plot)
     ax.set_title("%s\n%s" % (titulo, subtitulo), fontsize=11,
@@ -831,7 +1046,10 @@ def plotear_planta(eventos, fuente, perfil=None, n_asignados=None, totales=None)
         fig.suptitle("%s — %d eventos asignados%s"
                      % (nombre_popup, n_asignados, sufijo),
                      fontsize=12, fontweight='bold', y=0.98)
-    plt.tight_layout(rect=[0, 0, 1, 0.94])
+    fig.legend(handles=handles_leyenda, loc='lower center',
+               bbox_to_anchor=(0.5, 0.02), ncol=len(handles_leyenda),
+               fontsize=8, frameon=True)
+    plt.tight_layout(rect=[0, 0.10, 1, 0.94])
     _agregar_boton_detener(fig)
     _indicador_modo_interaccion(fig)
     plt.show()
@@ -859,8 +1077,10 @@ def plotear_perfil(eventos, perfil, fuente, percibidos, n_asignados=None,
     # --- Planta (izquierda) ---
     ax_planta = fig.add_subplot(1, 2, 1, projection=ccrs.PlateCarree())
     _base_mapa_planta(ax_planta, lon_min, lon_max, lat_min, lat_max)
+    _sismicidad_planta(ax_planta, lon_min, lon_max, lat_min, lat_max)
     _localidades_planta(ax_planta, lon_min, lon_max, lat_min, lat_max)
     scatter, eventos_plot = _marcadores_planta(ax_planta, eventos, fuente)
+    handles_leyenda = _handles_eventos(fuente) + [_handle_sismicidad()]
     ax_planta.set_title("Vista en Planta - Perfil %s %s\n%s"
                         % (perfil["id"], "(%s)" % _progreso if _progreso else "",
                            _texto_extencion(lon_min, lon_max, lat_min,
@@ -869,6 +1089,8 @@ def plotear_perfil(eventos, perfil, fuente, percibidos, n_asignados=None,
 
     # --- Perfil (derecha) ---
     ax_perfil = fig.add_subplot(1, 2, 2)
+
+    _sismicidad_perfil(ax_perfil, perfil)
 
     tp = perfil["topo_p"]
     alt = perfil["topo_alt"]
@@ -899,6 +1121,8 @@ def plotear_perfil(eventos, perfil, fuente, percibidos, n_asignados=None,
     xs = []
     ys = []
     colores = []
+    bordes = []
+    grosores = []
     eventos_perfil = []
     textos = []
     for evento in eventos:
@@ -912,6 +1136,9 @@ def plotear_perfil(eventos, perfil, fuente, percibidos, n_asignados=None,
         xs.append(x_km)
         ys.append(prof_punto)
         colores.append(color)
+        borde, grosor = _bordes_eventos([evento])
+        bordes.append(borde[0])
+        grosores.append(grosor[0])
         eventos_perfil.append(evento)
 
         if evento.get('id') is not None and etiquetas_perfil:
@@ -932,7 +1159,7 @@ def plotear_perfil(eventos, perfil, fuente, percibidos, n_asignados=None,
     scatter_perf = None
     if xs:
         scatter_perf = ax_perfil.scatter(xs, ys, s=60, c=colores, alpha=0.95,
-                                         edgecolors='black', linewidths=1.2,
+                                         edgecolors=bordes, linewidths=grosores,
                                          zorder=10, picker=True, pickradius=6)
         if textos:
             try:
@@ -967,12 +1194,6 @@ def plotear_perfil(eventos, perfil, fuente, percibidos, n_asignados=None,
     ax_perfil.set_title("Perfil %s (%.0f-%.0f km | 0-%d km de prof)"
                         % (perfil["id"], minX, maxX, PROF_MAX_KM),
                         fontsize=11, fontweight='bold', pad=10)
-    if total_eventos:
-        handles, labels = ax_perfil.get_legend_handles_labels()
-        handles.extend(_handles_eventos(fuente))
-        ax_perfil.legend(handles=handles, loc='upper center',
-                         bbox_to_anchor=(0.5, -0.12),
-                         ncol=3, fontsize=8, frameon=True)
 
     mostrar_json_en_popup("Perfil %s" % perfil["id"], eventos, fuente,
                           percibidos, total_eventos)
@@ -989,7 +1210,10 @@ def plotear_perfil(eventos, perfil, fuente, percibidos, n_asignados=None,
         fig.suptitle("Perfil %s — %d eventos asignados%s"
                      % (perfil["id"], n_asignados, sufijo),
                      fontsize=12, fontweight='bold', y=0.98)
-    plt.tight_layout(rect=[0, 0, 1, 0.94])
+    fig.legend(handles=handles_leyenda, loc='lower center',
+               bbox_to_anchor=(0.5, 0.02), ncol=len(handles_leyenda),
+               fontsize=8, frameon=True)
+    plt.tight_layout(rect=[0, 0.10, 1, 0.94])
     _agregar_boton_detener(fig)
     _indicador_modo_interaccion(fig)
     plt.show()
