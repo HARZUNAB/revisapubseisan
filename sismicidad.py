@@ -6,10 +6,12 @@ Catálogo de sismicidad histórica: carga, consultas espaciales y clasificación
 de los EVENTOS PLOTEADOS como "posible mal localizado" usando criterios
 configurables (distancia al slab y sismicidad histórica local).
 
-El catálogo (base_2023_2026.dat) se presume ya validado y se usa SOLO como
+El catálogo (base_2020_2026.dat) se presume ya validado y se usa SOLO como
 referencia (fondo en plotear.py y estadísticas locales en la clasificación).
 NUNCA se evalúa un evento del catálogo como sospechoso; es_sospechoso() solo
-se aplica a los eventos del lote que se está procesando.
+se aplica a los eventos del lote que se está procesando. Como los eventos del
+lote también existen en el catálogo, los conteos de vecinos excluyen el propio
+evento (self) para no auto-corroborarlo.
 
 La decisión está centralizada en la función pública es_sospechoso(ev), que
 recibe los parámetros del evento (lat/lon/prof más perp_km, residuo_km,
@@ -48,7 +50,15 @@ GRADO_KM_LAT = 111.0
 #
 # Pruebas disponibles (todas configurables, "activo" para habilitar/deshabilitar):
 #   perp_max_km           : distancia perpendicular epicentro->perfil > valor
-#   residuo_max_km        : |prof_ev - slab(along)| > valor
+#   residuo_max_km        : |prof_ev - slab(along)| >= valor. Cuando el evento
+#                           tiene perfil pero su residuo es None (slab sin
+#                           evaluar en esa posición), se considera lejos del
+#                           slab y se combina con el aislamiento histórico.
+#   densidad_local        : pocos vecinos históricos (sin contar el propio
+#                           evento) en la ventana radio_km x banda_prof_km
+#                           (<= max_vecinos). El ojo humano: un evento aislado
+#                           de la sismicidad histórica de 6 años merece
+#                           revisión aunque su residuo sea moderado.
 #   knn                   : promedio de distancia 3D (lat/lon/prof) a los k
 #                           vecinos históricos más cercanos > umbral_km
 #   ventana_aislamiento   : pocos históricos en ventana (radio_km horizontal +
@@ -56,7 +66,7 @@ GRADO_KM_LAT = 111.0
 #   desvio_mediana_prof   : |prof_ev - mediana prof_hist en la ventana| >
 #                           umbral_km (con conteo >= min_vecinos)
 #
-# "sin_catalogo": qué hacer cuando no existe base_2023_2026.dat y el grupo
+# "sin_catalogo": qué hacer cuando no existe base_2020_2026.dat y el grupo
 # "historica" no puede evaluarse:
 #   "ninguno"   -> no se marca (grupo no corroborado) [recomendado]
 #   "solo_slab" -> basta con que falle el grupo "slab"
@@ -66,20 +76,22 @@ GRADO_KM_LAT = 111.0
 CRITERIOS_SOSPECHOSO = {
     "regla": "ambos_grupos",
     "grupos": {
-        "slab": ["perp_max_km", "residuo_max_km"],
-        "historica": ["knn", "ventana_aislamiento", "desvio_mediana_prof"],
+        "slab": ["residuo_max_km"],
+        "historica": ["densidad_local"],
     },
     "min_por_grupo": {"slab": 1, "historica": 1},
     "sin_catalogo": "ninguno",
     "pruebas": {
-        "perp_max_km": {"activo": True, "valor": 60.0},
-        "residuo_max_km": {"activo": True, "valor": 60.0},
-        "knn": {"activo": True, "k": 5, "umbral_km": 55.0},
-        "ventana_aislamiento": {"activo": True, "radio_km": 40.0,
-                                "banda_prof_km": 40.0, "min_vecinos": 2},
-        "desvio_mediana_prof": {"activo": True, "radio_km": 40.0,
-                                "banda_prof_km": 40.0, "min_vecinos": 3,
-                                "umbral_km": 35.0},
+        "perp_max_km": {"activo": False, "valor": 55.0},
+        "residuo_max_km": {"activo": True, "valor": 25.0},
+        "densidad_local": {"activo": True, "radio_km": 20.0,
+                           "banda_prof_km": 10.0, "max_vecinos": 40},
+        "knn": {"activo": False, "k": 5, "umbral_km": 45.0},
+        "ventana_aislamiento": {"activo": False, "radio_km": 45.0,
+                                "banda_prof_km": 45.0, "min_vecinos": 2},
+        "desvio_mediana_prof": {"activo": False, "radio_km": 20.0,
+                                "banda_prof_km": 20.0, "min_vecinos": 2,
+                                "umbral_km": 20.0},
     },
 }
 
@@ -88,7 +100,7 @@ _cache_catalogo = None
 
 def cargar_catalogo(ruta=RUTA_CATALOGO):
     """
-    Lee el catálogo histórico (base_2023_2026.dat, separado por tabs) y lo
+    Lee el catálogo histórico (base_2020_2026.dat, separado por tabs) y lo
     guarda en caché. Devuelve un dict con arrays lat, lon, prof y la
     proyección local x, y (km) usando la latitud de referencia, o None si el
     archivo no existe o no tiene eventos válidos. El catálogo NUNCA se
@@ -142,7 +154,8 @@ def _coord_evento_en_km(ev, catalogo):
 def _dist_kkn(ev, catalogo, k):
     """
     Promedio (km) de la distancia 3D (x, y, prof) del evento a los k vecinos
-    históricos más cercanos. Devuelve None si no hay datos suficientes.
+    históricos más cercanos, excluyendo el propio evento (self) si coincide
+    con una entrada del catálogo. Devuelve None si no hay datos suficientes.
     """
     try:
         x, y = _coord_evento_en_km(ev, catalogo)
@@ -155,16 +168,23 @@ def _dist_kkn(ev, catalogo, k):
     d2 = dx * dx + dy * dy + dz * dz
     if len(d2) == 0:
         return None
-    k_ef = min(k, len(d2))
-    idx = np.argpartition(d2, k_ef - 1)[:k_ef]
-    return float(np.sqrt(d2[idx].mean()))
+    # Excluye el propio evento (distancia 3D < 0.5 km) para no auto-corroborarlo.
+    d2 = np.where(d2 > 0.25, d2, np.inf)
+    d2_val = d2[np.isfinite(d2)]
+    if len(d2_val) == 0:
+        return None
+    k_ef = min(k, len(d2_val))
+    idx = np.argpartition(d2_val, k_ef - 1)[:k_ef]
+    return float(np.sqrt(d2_val[idx].mean()))
 
 
 def _vecinos_ventana(ev, catalogo, radio_km, banda_prof_km):
     """
     Índices booleanos de los históricos dentro de una ventana cilíndrica
     (radio_km horizontal + banda_prof_km de profundidad) alrededor del
-    evento. Devuelve (mask, None) o (None, motivo).
+    evento, excluyendo el propio evento (self, distancia 3D < 0.5 km) ya que
+    los eventos del lote también existen en el catálogo. Devuelve (mask, None)
+    o (None, motivo).
     """
     try:
         x, y = _coord_evento_en_km(ev, catalogo)
@@ -174,7 +194,10 @@ def _vecinos_ventana(ev, catalogo, radio_km, banda_prof_km):
     dx = catalogo["x"] - x
     dy = catalogo["y"] - y
     horiz2 = dx * dx + dy * dy
-    mask = (horiz2 <= radio_km ** 2) & (np.abs(catalogo["prof"] - prof) <= banda_prof_km)
+    d3_2 = horiz2 + (catalogo["prof"] - prof) ** 2
+    mask = (horiz2 <= radio_km ** 2) & \
+           (np.abs(catalogo["prof"] - prof) <= banda_prof_km) & \
+           (d3_2 > 0.25)
     return mask, None
 
 
@@ -190,14 +213,32 @@ def _test_perp(ev, cfg, catalogo):
 
 
 def _test_residuo(ev, cfg, catalogo):
-    """válido solo si el evento tiene residuo_km numérico."""
+    """
+    Residuo respecto al slab. El evento se considera lejos del slab (prueba
+    positiva) cuando:
+      - residuo es None (slab sin evaluar en esa posición) -> se asume lejos,
+        quedando sujeto al aislamiento histórico para decidir.
+      - residuo >= cfg["valor"].
+    """
     residuo = ev.get('residuo_km')
     if residuo is None:
-        return False
+        return True
     try:
-        return float(residuo) > float(cfg["valor"])
+        r = float(residuo)
     except (TypeError, ValueError):
         return False
+    return r >= float(cfg["valor"])
+
+
+def _test_densidad_local(ev, cfg, catalogo):
+    """Pocos vecinos históricos (sin contar el self) en la ventana configurada."""
+    if catalogo is None:
+        return False
+    mask, _ = _vecinos_ventana(ev, catalogo, float(cfg["radio_km"]),
+                               float(cfg["banda_prof_km"]))
+    if mask is None:
+        return False
+    return int(mask.sum()) <= int(cfg["max_vecinos"])
 
 
 def _test_knn(ev, cfg, catalogo):
@@ -240,6 +281,7 @@ def _test_mediana_prof(ev, cfg, catalogo):
 _TEST_FUNCIONES = {
     "perp_max_km": _test_perp,
     "residuo_max_km": _test_residuo,
+    "densidad_local": _test_densidad_local,
     "knn": _test_knn,
     "ventana_aislamiento": _test_aislamiento,
     "desvio_mediana_prof": _test_mediana_prof,
@@ -276,7 +318,7 @@ def evaluar(ev, catalogo=None, criterios=None):
         "desvio_mediana_km": None,
     }
 
-    # Prueba interna: sin perfil -> fuera del umbral de asociación.
+# Prueba interna: sin perfil -> fuera del umbral de asociación.
     if ev.get('perfil') is None:
         return {"sospechoso": True, "sin_perfil": True,
                 "regla": criterios.get("regla", "ambos_grupos"),
@@ -291,19 +333,28 @@ def evaluar(ev, catalogo=None, criterios=None):
         veredictos[nombre] = funcion(ev, cfg, catalogo)
 
     # Métricas de contexto para el diagnóstico (reutiliza las sub-funciones
-    # de las pruebas con la configuración activa).
+    # de las pruebas con la configuración activa). El conteo de vecinos usa la
+    # ventana de densidad_local; si esa prueba está inactiva, se reporta None.
     if catalogo is not None and 'latitud' in ev:
         cfg_knn = pruebas.get("knn")
         if cfg_knn and cfg_knn.get("activo"):
             metricas["d_knn_km"] = _dist_kkn(ev, catalogo,
                                              int(cfg_knn.get("k", 5)))
-        cfg_vent = pruebas.get("ventana_aislamiento")
-        if cfg_vent and cfg_vent.get("activo"):
+        cfg_dens = pruebas.get("densidad_local")
+        if cfg_dens and cfg_dens.get("activo"):
             m, _ = _vecinos_ventana(ev, catalogo,
-                                    float(cfg_vent.get("radio_km", 40.0)),
-                                    float(cfg_vent.get("banda_prof_km", 40.0)))
+                                    float(cfg_dens.get("radio_km", 40.0)),
+                                    float(cfg_dens.get("banda_prof_km", 40.0)))
             if m is not None:
                 metricas["vecinos_ventana"] = int(m.sum())
+        else:
+            cfg_vent = pruebas.get("ventana_aislamiento")
+            if cfg_vent and cfg_vent.get("activo"):
+                m, _ = _vecinos_ventana(ev, catalogo,
+                                        float(cfg_vent.get("radio_km", 40.0)),
+                                        float(cfg_vent.get("banda_prof_km", 40.0)))
+                if m is not None:
+                    metricas["vecinos_ventana"] = int(m.sum())
         cfg_desv = pruebas.get("desvio_mediana_prof")
         if cfg_desv and cfg_desv.get("activo"):
             m, _ = _vecinos_ventana(ev, catalogo,

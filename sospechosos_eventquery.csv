@@ -1,0 +1,139 @@
+id,fecha hora,latitud,longitud,prof,perfil,perp_km,residuo_km,dist_asoc,d_knn_km,vecinos_ventana,criterios,archivo_origen,n_fila_origen
+4,2026-09-01 02:25:00,-21.33,-67.95,223.1,P006,26.767,103.643,107.044,,10,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,3
+19,2026-09-01 10:46:36,-21.4,-68.28,203.2,P006,28.173,98.72,102.661,,2,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,18
+22,2026-09-01 13:35:25,-23.93,-67.37,235.6,,,,114.767,,,,new_2_sept_2026.csv,21
+23,2026-09-01 14:40:38,-23.98,-67.4,237.2,,,,116.657,,,,new_2_sept_2026.csv,22
+27,2026-09-01 18:01:48,-31.72,-70.85,127.3,P017,32.755,58.051,66.654,,1,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,26
+45,2026-09-02 03:21:15,-23.99,-67.85,241.6,,,,142.261,,,,new_2_sept_2026.csv,44
+60,2026-09-02 12:54:50,-27.84,-68.68,118.8,P013,32.687,29.138,43.789,,0,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,59
+64,2026-09-02 17:13:22,-21.09,-68.81,152.4,P005,25.449,64.588,69.421,,22,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,63
+65,2026-09-02 17:22:55,-29.3,-69.76,29.6,P014,17.68,55.05,57.82,,2,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,64
+71,2026-09-02 20:54:04,-28.29,-70.8,17.9,P013,16.225,29.744,33.882,,7,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,70
+75,2026-09-02 23:19:24,-21.25,-68.25,183.1,P006,43.432,75.796,87.358,,15,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,74
+79,2026-09-03 02:49:41,-23.77,-67.73,240.6,,,,138.499,,,,new_2_sept_2026.csv,78
+81,2026-09-03 05:39:16,-21.21,-68.15,68.2,P006,45.019,43.775,62.793,,1,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,80
+82,2026-09-03 05:52:17,-22.9,-68.3,131.3,P007,30.857,38.086,49.017,,39,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,81
+86,2026-09-03 06:51:40,-34.08,-73.4,31.7,P019,29.911,,29.911,,16,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,85
+92,2026-09-03 11:06:46,-34.04,-73.2,12.7,P019,20.134,,20.134,,21,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,91
+93,2026-09-03 11:44:25,-18.45,-71.03,11.6,P002,4.766,27.256,27.67,,21,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,92
+101,2026-09-03 21:18:20,-31.86,-71.2,85.8,P017,21.005,33.068,39.175,,21,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,100
+111,2026-09-04 03:57:01,-24.01,-67.43,237.2,,,,117.649,,,,new_2_sept_2026.csv,110
+112,2026-09-04 05:12:49,-23.01,-69.85,75.8,P007,3.915,26.475,26.763,,14,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,111
+120,2026-09-04 11:38:30,-56.78,-66.44,10.0,,,,1295.404,,,,new_2_sept_2026.csv,119
+121,2026-09-04 12:41:25,-27.77,-69.17,113.8,P012,40.831,26.39,48.616,,30,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,120
+125,2026-09-04 16:19:24,-20.94,-70.52,54.9,P005,39.853,25.852,47.504,,36,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,124
+134,2026-09-05 03:45:41,-29.08,-69.69,116.1,P014,5.355,30.57,31.035,,33,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,133
+140,2026-09-05 07:16:31,-22.18,-67.89,239.6,,,,129.294,,,,new_2_sept_2026.csv,139
+142,2026-09-05 08:13:02,-21.09,-67.74,180.1,P006,46.806,46.198,65.765,,14,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,141
+144,2026-09-05 08:53:15,-23.93,-67.62,219.1,,,,112.752,,,,new_2_sept_2026.csv,143
+148,2026-09-05 14:38:04,-33.76,-70.11,11.4,P019,4.398,86.215,86.327,,20,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,147
+149,2026-09-05 14:47:09,-33.76,-70.1,11.6,P019,4.326,86.392,86.501,,19,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,148
+150,2026-09-05 15:09:12,-22.57,-67.36,239.3,P007,18.908,101.969,103.707,,14,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,149
+154,2026-09-05 21:36:29,-34.61,-73.95,30.1,P020,6.711,,6.711,,18,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,153
+158,2026-09-06 01:10:54,-26.08,-68.9,126.8,P011,37.575,37.293,52.94,,4,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,157
+166,2026-09-06 06:13:40,-33.76,-70.1,9.4,P019,4.326,88.592,88.698,,19,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,165
+174,2026-09-06 10:46:06,-33.75,-70.12,9.7,P019,5.575,87.558,87.735,,17,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,173
+175,2026-09-06 11:29:26,-33.75,-70.12,9.8,P019,5.575,87.458,87.635,,17,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,174
+179,2026-09-06 14:34:11,-21.33,-67.87,206.4,P006,24.608,83.015,86.585,,20,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,178
+185,2026-09-06 19:41:37,-36.61,-70.62,5.0,,,,121.205,,,,new_2_sept_2026.csv,184
+192,2026-09-07 02:11:47,-22.37,-68.1,206.9,P007,21.172,102.481,104.645,,20,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,191
+204,2026-09-07 08:43:54,-23.12,-67.79,150.0,P008,35.016,38.475,52.024,,40,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,203
+211,2026-09-07 15:11:23,-20.73,-68.83,140.1,P005,13.506,49.682,51.485,,2,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,210
+217,2026-09-07 21:54:38,-24.78,-69.29,141.6,P009,9.766,68.353,69.048,,1,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,216
+222,2026-09-08 01:13:31,-23.91,-67.39,233.1,,,,114.147,,,,new_2_sept_2026.csv,221
+224,2026-09-08 02:18:44,-27.62,-69.07,119.8,P012,25.954,31.216,40.596,,25,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,223
+230,2026-09-08 05:10:50,-23.84,-67.12,247.9,,,,113.906,,,,new_2_sept_2026.csv,229
+231,2026-09-08 05:16:37,-21.79,-67.74,247.8,,,,127.78,,,,new_2_sept_2026.csv,230
+232,2026-09-08 07:22:10,-23.0,-69.86,16.0,P007,2.589,33.072,33.173,,11,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,231
+235,2026-09-08 08:35:34,-24.11,-67.67,185.8,P009,28.533,73.13,78.499,,31,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,234
+238,2026-09-08 10:51:11,-24.45,-69.27,101.6,P009,25.622,26.318,36.73,,27,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,237
+241,2026-09-08 12:18:15,-20.76,-68.68,142.7,P005,5.976,48.129,48.498,,1,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,240
+254,2026-09-08 22:46:06,-31.09,-70.37,119.1,P016,5.085,32.319,32.716,,29,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,253
+272,2026-09-09 13:40:53,-21.11,-67.9,222.1,P006,48.984,97.006,108.672,,14,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,271
+279,2026-09-09 21:21:38,-21.07,-68.71,164.4,P005,26.205,73.568,78.096,,7,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,278
+283,2026-09-09 22:06:59,-23.83,-67.59,218.0,,,,114.29,,,,new_2_sept_2026.csv,282
+285,2026-09-09 22:17:58,-38.24,-75.04,20.0,P024,10.276,,10.276,,22,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,284
+296,2026-09-10 06:18:23,-17.58,-70.24,40.9,P001,30.007,58.302,65.571,,0,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,295
+310,2026-09-10 15:55:33,-22.57,-66.83,307.6,,,,142.518,,,,new_2_sept_2026.csv,309
+312,2026-09-10 18:21:18,-34.83,-109.15,10.0,,,,2800.054,,,,new_2_sept_2026.csv,311
+313,2026-09-10 18:38:11,-23.93,-67.6,223.6,,,,115.854,,,,new_2_sept_2026.csv,312
+317,2026-09-10 19:57:56,-22.59,-67.17,221.1,P007,25.828,73.215,77.637,,4,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,316
+319,2026-09-11 00:20:33,-23.83,-67.56,258.8,,,,149.472,,,,new_2_sept_2026.csv,318
+320,2026-09-11 01:39:28,-24.03,-68.09,234.2,,,,143.092,,,,new_2_sept_2026.csv,319
+322,2026-09-11 02:22:58,-21.1,-69.94,82.5,P005,6.083,34.494,35.027,,14,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,321
+324,2026-09-11 03:49:48,-23.6,-66.91,200.0,P008,37.256,46.356,59.472,,40,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,323
+327,2026-09-11 05:05:34,-21.5,-68.45,157.3,P006,22.046,59.657,63.6,,35,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,326
+331,2026-09-11 07:01:36,-22.01,-70.15,67.3,P006,13.187,28.547,31.445,,39,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,330
+344,2026-09-11 13:39:54,-22.35,-68.21,175.5,P007,26.082,74.876,79.288,,11,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,343
+351,2026-09-11 21:07:47,-21.91,-67.73,226.1,,,,112.035,,,,new_2_sept_2026.csv,350
+356,2026-09-11 23:33:06,-23.08,-69.86,16.0,P007,11.2,32.314,34.2,,10,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,355
+362,2026-09-12 04:32:58,-20.28,-69.07,129.6,P004,37.431,44.586,58.215,,9,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,361
+365,2026-09-12 08:46:29,-28.48,-69.17,112.1,P013,29.851,25.317,39.141,,11,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,364
+368,2026-09-12 10:44:00,-31.55,-72.75,33.6,P016,34.222,25.207,42.503,,7,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,367
+372,2026-09-12 11:48:22,-21.5,-68.38,171.1,P006,20.158,71.188,73.987,,1,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,371
+374,2026-09-12 12:13:55,-18.45,-69.46,6.7,P003,54.777,88.533,104.109,,1,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,373
+380,2026-09-12 16:04:38,-17.39,-70.44,121.5,P001,2.904,26.719,26.877,,0,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,379
+392,2026-09-13 00:00:56,-21.33,-67.68,236.1,P006,19.478,102.723,104.553,,12,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,391
+409,2026-09-13 06:36:30,-24.92,-69.29,146.0,P009,24.959,73.462,77.586,,2,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,408
+410,2026-09-13 06:41:32,-21.32,-68.36,217.4,,,,121.392,,,,new_2_sept_2026.csv,409
+413,2026-09-13 07:35:29,-56.89,-66.76,10.0,,,,1306.615,,,,new_2_sept_2026.csv,412
+415,2026-09-13 08:23:17,-29.1,-70.44,97.8,P014,14.687,25.289,29.244,,22,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,414
+420,2026-09-13 11:16:31,-23.79,-67.66,245.6,,,,141.744,,,,new_2_sept_2026.csv,419
+428,2026-09-13 15:56:14,-20.98,-68.18,188.7,P005,31.923,78.484,84.728,,14,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,427
+434,2026-09-13 21:15:35,-25.03,-68.95,150.7,P009,44.109,72.002,84.438,,1,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,433
+436,2026-09-13 22:42:51,-21.33,-67.67,203.9,P006,19.208,70.013,72.6,,40,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,435
+437,2026-09-13 22:45:39,-22.21,-68.04,214.4,,,,112.106,,,,new_2_sept_2026.csv,436
+438,2026-09-13 23:04:27,-35.42,-73.99,25.0,P021,10.38,,10.38,,16,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,437
+439,2026-09-13 23:11:09,-31.5,-71.85,57.9,P016,32.002,35.734,47.969,,8,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,438
+441,2026-09-13 23:56:33,-23.38,-67.33,246.8,,,,115.415,,,,new_2_sept_2026.csv,440
+447,2026-09-14 03:22:13,-34.9,-70.23,137.2,P020,33.464,29.553,44.645,,8,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,446
+466,2026-09-14 14:15:31,-19.71,-69.0,127.5,P004,20.859,33.664,39.602,,16,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,465
+472,2026-09-14 17:57:58,-29.56,-69.54,138.3,P015,49.345,46.892,68.072,,13,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,471
+473,2026-09-14 20:53:12,-23.78,-67.17,177.5,P009,53.703,35.925,64.611,,15,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,472
+474,2026-09-14 22:06:00,-21.3,-69.89,19.8,P005,16.682,27.727,32.359,,18,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,473
+481,2026-09-15 00:14:40,-17.78,-70.0,173.9,P001,59.616,68.917,91.124,,0,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,480
+491,2026-09-15 05:52:58,-19.87,-69.45,118.4,P004,17.751,41.838,45.448,,21,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,490
+512,2026-09-15 23:02:04,-31.89,-69.87,132.5,P017,3.66,33.973,34.169,,15,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,511
+517,2026-09-16 04:46:13,-18.2,-69.27,149.6,P002,29.998,37.094,47.706,,10,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,516
+527,2026-09-16 14:20:03,-20.27,-71.03,56.0,P004,23.483,39.642,46.075,,2,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,526
+528,2026-09-16 14:21:14,-23.96,-67.59,221.1,,,,112.07,,,,new_2_sept_2026.csv,527
+530,2026-09-16 17:04:51,-20.72,-69.66,96.9,P005,38.525,33.09,50.785,,20,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,529
+537,2026-09-17 00:02:04,-21.94,-67.63,239.6,,,,121.15,,,,new_2_sept_2026.csv,536
+538,2026-09-17 00:14:53,-24.57,-70.5,74.0,P009,38.668,35.281,52.345,,1,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,537
+540,2026-09-17 03:21:46,-28.52,-69.36,118.9,P013,31.289,33.124,45.565,,12,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,539
+542,2026-09-17 05:02:13,-23.88,-67.54,260.8,,,,148.872,,,,new_2_sept_2026.csv,541
+555,2026-09-17 16:17:06,-32.69,-70.43,14.8,P018,25.11,67.617,72.129,,5,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,554
+564,2026-09-18 01:13:07,-21.99,-67.81,229.2,,,,120.487,,,,new_2_sept_2026.csv,563
+567,2026-09-18 04:11:32,-22.51,-66.27,250.0,P007,39.821,43.063,58.653,,8,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,566
+568,2026-09-18 04:12:12,-38.14,-75.01,15.8,P024,1.12,,1.12,,29,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,567
+571,2026-09-18 07:23:19,-22.92,-66.4,250.7,P008,24.399,48.586,54.368,,9,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,570
+578,2026-09-18 13:05:02,-47.01,-74.46,10.0,,,,190.337,,,,new_2_sept_2026.csv,577
+579,2026-09-18 14:42:40,-18.08,-69.34,148.9,P002,14.991,37.45,40.339,,23,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,578
+585,2026-09-18 19:54:27,-23.99,-68.12,181.1,P009,51.12,82.913,97.405,,7,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,584
+588,2026-09-18 23:38:58,-23.79,-67.52,243.6,,,,134.822,,,,new_2_sept_2026.csv,587
+589,2026-09-18 23:59:52,-19.12,-67.8,267.0,P004,46.403,96.932,107.467,,0,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,588
+600,2026-09-19 09:15:43,-20.44,-69.31,123.8,P004,47.009,48.99,67.896,,20,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,599
+606,2026-09-19 16:16:33,-22.94,-67.9,133.1,P007,45.185,26.957,52.615,,21,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,605
+607,2026-09-19 17:15:02,-23.17,-67.15,217.0,P008,14.781,71.722,73.229,,15,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,606
+608,2026-09-19 17:59:54,-23.65,-68.02,142.5,P008,16.941,44.54,47.653,,20,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,607
+609,2026-09-19 18:35:35,-24.21,-68.2,127.3,P009,28.948,32.465,43.497,,9,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,608
+614,2026-09-19 22:31:21,-23.06,-67.17,254.5,,,,112.002,,,,new_2_sept_2026.csv,613
+622,2026-09-20 01:58:40,-23.48,-66.99,252.4,P008,22.432,101.936,104.375,,39,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,621
+623,2026-09-20 02:29:13,-21.07,-68.04,240.3,,,,133.049,,,,new_2_sept_2026.csv,622
+624,2026-09-20 03:04:18,-28.63,-70.99,66.2,P013,18.099,28.95,34.142,,13,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,623
+625,2026-09-20 03:45:16,-17.36,-69.82,163.7,P001,22.454,45.488,50.728,,19,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,624
+626,2026-09-20 04:26:18,-20.54,-69.04,128.2,P005,39.824,42.073,57.932,,15,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,625
+639,2026-09-20 12:13:36,-23.92,-67.55,222.2,,,,112.399,,,,new_2_sept_2026.csv,638
+645,2026-09-20 16:41:16,-27.93,-69.97,22.4,P012,45.873,47.387,65.953,,0,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,644
+656,2026-09-21 01:43:43,-26.18,-72.01,35.0,P010,30.35,,30.35,,0,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,655
+657,2026-09-21 02:12:53,-22.89,-66.81,254.9,P008,37.156,82.253,90.255,,33,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,656
+658,2026-09-21 02:50:50,-28.82,-72.47,30.0,P013,34.254,,34.254,,14,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,657
+663,2026-09-21 05:13:11,-20.47,-69.49,111.9,P004,44.649,44.239,62.854,,8,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,662
+665,2026-09-21 06:10:43,-23.64,-67.2,254.5,,,,124.393,,,,new_2_sept_2026.csv,664
+666,2026-09-21 06:12:17,-23.81,-67.66,222.1,,,,120.353,,,,new_2_sept_2026.csv,665
+671,2026-09-21 09:03:35,-23.12,-70.48,54.4,P007,0.021,25.729,25.729,,5,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,670
+672,2026-09-21 09:36:39,-23.52,-67.42,260.8,,,,137.27,,,,new_2_sept_2026.csv,671
+675,2026-09-21 10:48:40,-24.94,-69.01,159.8,P009,33.069,81.74,88.176,,1,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,674
+679,2026-09-21 11:48:30,-22.29,-71.76,10.0,P006,4.519,,4.519,,1,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,678
+684,2026-09-21 17:38:41,-22.03,-67.86,221.7,,,,115.103,,,,new_2_sept_2026.csv,683
+689,2026-09-21 20:59:01,-25.41,-68.86,119.9,P010,13.518,34.413,36.973,,10,slab:residuo_max_km; historica:densidad_local,new_2_sept_2026.csv,688

@@ -81,17 +81,17 @@ COLOR_PERCIBIDO = "#c00000"
 
 # COLOR_NO_PERCIBIDO: color de relleno del resto de los eventos (no
 # percibidos o seisan).
-COLOR_NO_PERCIBIDO = "teal"
+COLOR_NO_PERCIBIDO = "#ffff00"
 
 # COLOR_BORDE_SOSPECHOSO: color del borde de los eventos marcados como
 # posiblemente mal localizados (campo sospechoso=True de generajson.py).
 # El relleno conserva el color por percibido/no percibido; el borde violeta
 # marca la sospecha sin tapar esa información.
-COLOR_BORDE_SOSPECHOSO = "#7a1fa2"
+COLOR_BORDE_SOSPECHOSO = "#7b1196"
 
 # COLOR_RESALTADO: color del anillo que indica el evento seleccionado con un
 # clic en el mapa (no se usa para clasificar eventos).
-COLOR_RESALTADO = "#00b4d8"
+COLOR_RESALTADO = "#000080"
 
 # COLOR_SLAB: color de la línea del slab en el perfil.
 COLOR_SLAB = "black"
@@ -167,6 +167,22 @@ HIST_LABEL = "Sismicidad histórica 2020-2026"
 # en mapasOPA/ploteo/capturar.py).
 RELIEVE_LOCAL = ((-97.0, -53.0), (-62.0, -4.0))  # (lon_min, lon_max), (lat_min, lat_max)
 
+# Límites geográficos para los tres territorios de eventos sin perfil:
+# 1. Territorio Nacional Chileno: margen continental donde se definen los perfiles
+TERRITORIO_NACIONAL = ((-77.0, -66.0), (-56.0, -17.5))
+# 2. Territorio Insular Chileno: Isla de Pascua y alrededores (Pacifico oriental)
+TERRITORIO_INSULAR = ((-110.0, -72.0), (-45.0, -31.0))
+# 3. Territorio Antártico Chileno: reclamo antártico chileno (53°W-90°W, 53°S-South Pole)
+TERRITORIO_ANTARTICO = ((-76.0, -57.0), (-71.0, -53.0))
+
+# TERRITORIOS: índice por nombre de los límites de cada territorio. Mismo
+# formato que las constantes: (lon, lat) = ((lon_min, lon_max), (lat_min, lat_max)).
+TERRITORIOS = {
+    "Nacional": TERRITORIO_NACIONAL,
+    "Insular": TERRITORIO_INSULAR,
+    "Antártico": TERRITORIO_ANTARTICO,
+}
+
 
 def _cargar_relieve_planta(lon_min, lon_max, lat_min, lat_max):
     """
@@ -225,8 +241,7 @@ def _cargar_relieve_planta(lon_min, lon_max, lat_min, lat_max):
 def _color_evento(fuente, evento):
     """
     Color de RELLENO del evento según fuente y percibido. La sospecha (borde
-    violeta) se maneja aparte como atributo del marcador, de modo que un
-    evento sospechoso conserva su relleno de percibido/no percibido.
+    violeta) se maneja aparte como atributo del marcador.
     """
     if fuente == "eventquery" and evento.get('percibido') == "S":
         return COLOR_PERCIBIDO
@@ -285,7 +300,7 @@ def _handles_eventos(fuente):
 
 
 # =========================================================================
-# FONDO DE SISMICIDAD HISTÓRICA (base_2023_2026.dat, solo referencia)
+# FONDO DE SISMICIDAD HISTÓRICA (base_2020_2026.dat, solo referencia)
 # =========================================================================
 
 _cache_sismicidad = None
@@ -525,9 +540,11 @@ def _marcadores_planta(ax, eventos, fuente):
     return scatter, eventos_plot
 
 
-def _localidades_planta(ax, lon_min, lon_max, lat_min, lat_max):
+def _localidades_planta(ax, lon_min, lon_max, lat_min, lat_max, territorio=None):
     """Marca las localidades que caen dentro del área visible de la planta."""
     if not os.path.isfile(ARCHIVO_LOCALIDADES):
+        return
+    if territorio == "Nacional":
         return
     try:
         with open(ARCHIVO_LOCALIDADES, mode='r', encoding='utf-8') as f:
@@ -553,7 +570,7 @@ def _localidades_planta(ax, lon_min, lon_max, lat_min, lat_max):
 
 
 
-def _extent_planta_por_eventos(eventos, perfil=None):
+def _extent_planta_por_eventos(eventos, perfil=None, territorio=None, margen_adicional=None):
     """
     Calcula el área visible de la vista en planta con proporción fija
     (ASPECTO_PLANTA_GRADOS), centrada en los eventos del perfil.
@@ -562,6 +579,10 @@ def _extent_planta_por_eventos(eventos, perfil=None):
     si el perfil no tiene eventos con coordenadas), expande con el margen de
     planta y ajusta la extensión para que ancho/alto en grados sea exactamente
     ASPECTO_PLANTA_GRADOS. Así todos los mapas se renderizan igual de grandes.
+
+    Si se proporciona 'territorio', también se consideran sus límites por
+    defecto para asegurar que el mapa cubra el área del territorio, haciendo
+    los márgenes dinámicos para adaptarse a eventos fuera de esos límites.
     Devuelve (lon_min, lon_max, lat_min, lat_max).
     """
     lons = []
@@ -580,12 +601,35 @@ def _extent_planta_por_eventos(eventos, perfil=None):
         lats = [float(x) for x in lat_s if not np.isnan(x)]
 
     if not lons:
+        if territorio is not None:
+            return _extent_territorio(territorio, margen=margen_adicional)
         return None
 
-    lon_min = min(lons) - MARGEN_PLANTA_GRADOS
-    lon_max = max(lons) + MARGEN_PLANTA_GRADOS
-    lat_min = min(lats) - MARGEN_PLANTA_GRADOS
-    lat_max = max(lats) + MARGEN_PLANTA_GRADOS
+    margen = MARGEN_PLANTA_GRADOS if margen_adicional is None else margen_adicional
+    lon_min_e = min(lons)
+    lon_max_e = max(lons)
+    lat_min_e = min(lats)
+    lat_max_e = max(lats)
+
+    if territorio is not None and territorio in TERRITORIOS:
+        ((tlon_min, tlon_max), (tlat_min, tlat_max)) = TERRITORIOS[territorio]
+        lon_min = min(lon_min_e, tlon_min)
+        lon_max = max(lon_max_e, tlon_max)
+        lat_min = min(lat_min_e, tlat_min)
+        lat_max = max(lat_max_e, tlat_max)
+    else:
+        lon_min = lon_min_e
+        lon_max = lon_max_e
+        lat_min = lat_min_e
+        lat_max = lat_max_e
+
+    lon_min = lon_min - margen
+    lon_max = lon_max + margen
+    lat_min = lat_min - margen
+    lat_max = lat_max + margen
+
+    if territorio is not None:
+        return (lon_min, lon_max, lat_min, lat_max)
 
     ancho = lon_max - lon_min
     alto = lat_max - lat_min
@@ -649,6 +693,81 @@ def _texto_parametros_evento(ev):
                       % (ev.get('perfil'), ev.get('along_km', '')))
     return "\n".join(lineas)
 
+def _distancia_a_rectangulo(lon, lat, limites):
+    """Distancia mínima (grados) de un punto (lon, lat) a una caja geográfica."""
+    (lon_min, lon_max), (lat_min, lat_max) = limites
+    dx = max(lon_min - lon, 0.0, lon - lon_max)
+    dy = max(lat_min - lat, 0.0, lat - lat_max)
+    return math.sqrt(dx * dx + dy * dy)
+
+
+def _categorizar_por_territorio(eventos):
+    """Categoriza eventos sin perfil en los 3 territorios definidos.
+
+    Los eventos que no caen dentro de los límites por defecto de NINGÚN
+    territorio se asignan al territorio cuya caja les queda más cerca, para
+    que nunca queden fuera de los mapas; su mapa se expande dinámicamente
+    para incluirlos. Se imprime un aviso en consola cuando esto ocurre.
+    """
+    resultado = {nombre: [] for nombre in TERRITORIOS}
+    fuera = []
+
+    for ev in eventos:
+        try:
+            lon = float(ev['longitud'])
+            lat = float(ev['latitud'])
+        except (TypeError, ValueError, KeyError):
+            continue
+
+        for nombre, limites in TERRITORIOS.items():
+            (lon_min, lon_max), (lat_min, lat_max) = limites
+            if lon_min <= lon <= lon_max and lat_min <= lat <= lat_max:
+                resultado[nombre].append(ev)
+                break
+        else:
+            fuera.append((ev, lon, lat))
+
+    for ev, lon, lat in fuera:
+        mejor_nombre = None
+        mejor_dist = None
+        for nombre, limites in TERRITORIOS.items():
+            d = _distancia_a_rectangulo(lon, lat, limites)
+            if mejor_dist is None or d < mejor_dist:
+                mejor_dist = d
+                mejor_nombre = nombre
+        resultado[mejor_nombre].append(ev)
+        print("[Aviso] Evento %s (%.2f, %.2f) fuera de los límites por defecto; "
+              "asignado al territorio '%s' (a ~%d km). El mapa se expandirá."
+              % (ev.get('id'), lat, lon, mejor_nombre,
+                 round(mejor_dist * 111.0)))
+
+    return resultado["Nacional"], resultado["Insular"], resultado["Antártico"]
+
+
+def _extent_territorio(nombre, margen=None):
+    """
+    Devuelve la extensión geográfica completa de un territorio sin forzar
+    proporción: (lon_min, lon_max, lat_min, lat_max). 'nombre' debe ser una
+    clave de TERRITORIOS. 'margen' en grados alrededor de los límites.
+    """
+    if nombre not in TERRITORIOS:
+        return None
+    if margen is None:
+        margen = MARGEN_PLANTA_GRADOS
+    ((lon_min, lon_max), (lat_min, lat_max)) = TERRITORIOS[nombre]
+    return (lon_min - margen, lon_max + margen,
+            lat_min - margen, lat_max + margen)
+
+
+def _limpiar_resaltado(ax):
+    """Elimina anillos de selección y viñetas marcados en 'ax'."""
+    for coll in list(ax.collections):
+        if getattr(coll, '_es_resaltado', False):
+            coll.remove()
+    for t in list(ax.texts):
+        if getattr(t, '_es_anotacion', False):
+            t.remove()
+
 
 def _resaltar_evento(ax, ev, lon=None, lat=None, x_km=None, prof_km=None,
                      anotar=True):
@@ -657,12 +776,7 @@ def _resaltar_evento(ax, ev, lon=None, lat=None, x_km=None, prof_km=None,
     una viñeta con sus parámetros cerca del círculo.
     """
     # Elimina resaltados y viñetas previos en el mismo axes
-    for coll in list(ax.collections):
-        if getattr(coll, '_es_resaltado', False):
-            coll.remove()
-    for t in list(ax.texts):
-        if getattr(t, '_es_anotacion', False):
-            t.remove()
+    _limpiar_resaltado(ax)
 
     contenido = _texto_parametros_evento(ev)
 
@@ -672,7 +786,7 @@ def _resaltar_evento(ax, ev, lon=None, lat=None, x_km=None, prof_km=None,
                         transform=ccrs.PlateCarree(), picker=False)
         if anotar:
             anot = ax.annotate(
-                contenido, xy=(lon, lat), xytext=(20, -20),
+                contenido, xy=(lon, lat), xytext=(0, 25),
                 textcoords='offset points', fontsize=8, color='black',
                 bbox=dict(boxstyle='round,pad=0.4', fc='lightyellow',
                           ec='navy', alpha=0.95),
@@ -684,7 +798,7 @@ def _resaltar_evento(ax, ev, lon=None, lat=None, x_km=None, prof_km=None,
                         picker=False)
         if anotar:
             anot = ax.annotate(
-                contenido, xy=(x_km, prof_km), xytext=(20, -20),
+                contenido, xy=(x_km, prof_km), xytext=(0, 25),
                 textcoords='offset points', fontsize=8, color='black',
                 bbox=dict(boxstyle='round,pad=0.4', fc='lightyellow',
                           ec='navy', alpha=0.95),
@@ -743,17 +857,23 @@ def _conectar_seleccion_eventos(fig, ax, scatter, eventos_plot,
     de < 5 px en esos modos, asi no hay conflicto). Si 'contraparte' es
     (ax2, eventos2), resalta el mismo evento en el otro mapa con el mismo
     anillo (mismo tamano y color); la viñeta solo aparece en el mapa clicado.
+    Un clic en espacio vacio (fuera de cualquier circulo) elimina la viñeta y
+    los anillos de ambos mapas.
     """
     presion = {'x': None, 'y': None}
 
     def on_press(evento):
         if getattr(evento, 'x', None) is None:
             return
+        if getattr(evento, 'inaxes', None) is not ax:
+            return
         presion['x'] = evento.x
         presion['y'] = evento.y
 
     def on_release(evento):
         if presion['x'] is None:
+            return
+        if getattr(evento, 'inaxes', None) is not ax:
             return
         dx = abs(evento.x - presion['x'])
         dy = abs(evento.y - presion['y'])
@@ -765,6 +885,12 @@ def _conectar_seleccion_eventos(fig, ax, scatter, eventos_plot,
             return
         cont = scatter.contains(evento)
         if not cont[0]:
+            _limpiar_resaltado(ax)
+            if contraparte is not None:
+                ax2, _ = contraparte
+                if ax2 is not None:
+                    _limpiar_resaltado(ax2)
+            fig.canvas.draw_idle()
             return
         ind = cont[1]['ind']
         if not len(ind):
@@ -986,16 +1112,19 @@ def _indicador_modo_interaccion(fig):
     _refrescar()
 
 
-def plotear_planta(eventos, fuente, perfil=None, n_asignados=None, totales=None):
+def plotear_planta(eventos, fuente, perfil=None, n_asignados=None, totales=None,
+                   territorio=None):
     """
     Crea una ventana con la vista en planta (relieve + localidades + eventos).
     Si se pasa 'perfil', el área visible se deriva del recorrido del slab;
-    si no (eventos sin perfil), se usa la extensión de los propios eventos.
+    si no, y se pasa 'territorio' (clave de TERRITORIOS), se usa la extensión
+    completa de ese territorio; si no, la extensión de los propios eventos.
     n_asignados/totales: conteos de generajson.py para mostrar en la ventana.
     Devuelve (percibidos, total_eventos).
     """
     total_eventos = 0
     percibidos = 0
+    sospechosos = 0
     for ev in eventos:
         try:
             float(ev['latitud'])
@@ -1005,14 +1134,24 @@ def plotear_planta(eventos, fuente, perfil=None, n_asignados=None, totales=None)
         total_eventos += 1
         if fuente == "eventquery" and ev.get('percibido') == "S":
             percibidos += 1
+        if ev.get('sospechoso'):
+            sospechosos += 1
 
-    extent = _extent_planta_por_eventos(eventos, perfil)
+    if eventos:
+        extent = _extent_planta_por_eventos(eventos, perfil, territorio=territorio)
+    elif territorio is not None:
+        extent = _extent_territorio(territorio)
+    else:
+        extent = None
     if extent is None:
         return percibidos, 0
     lon_min, lon_max, lat_min, lat_max = extent
     if perfil is not None:
         titulo = "Vista en Planta - Perfil %s" % perfil["id"]
         nombre_popup = "Perfil %s" % perfil["id"]
+    elif territorio is not None:
+        titulo = "Vista en Planta - Eventos sin perfil - Territorio %s" % territorio
+        nombre_popup = "Territorio %s" % territorio
     else:
         titulo = "Vista en Planta - Eventos sin perfil asignado"
         nombre_popup = "Eventos sin perfil"
@@ -1023,10 +1162,9 @@ def plotear_planta(eventos, fuente, perfil=None, n_asignados=None, totales=None)
     fig = plt.figure(figsize=FIG_SIZE, dpi=DPI)
     ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
     _base_mapa_planta(ax, lon_min, lon_max, lat_min, lat_max)
-    _sismicidad_planta(ax, lon_min, lon_max, lat_min, lat_max)
-    _localidades_planta(ax, lon_min, lon_max, lat_min, lat_max)
+    _localidades_planta(ax, lon_min, lon_max, lat_min, lat_max, territorio=territorio)
     scatter, eventos_plot = _marcadores_planta(ax, eventos, fuente)
-    handles_leyenda = _handles_eventos(fuente) + [_handle_sismicidad()]
+    handles_leyenda = _handles_eventos(fuente)
     if scatter is not None:
         _conectar_seleccion_eventos(fig, ax, scatter, eventos_plot)
     ax.set_title("%s\n%s" % (titulo, subtitulo), fontsize=11,
@@ -1039,12 +1177,12 @@ def plotear_planta(eventos, fuente, perfil=None, n_asignados=None, totales=None)
     if fuente == "eventquery" and percibidos:
         sufijo = " — %d percibidos" % percibidos
     if totales:
-        fig.suptitle("%s — %d eventos asignados (de %d totales)%s"
-                     % (nombre_popup, n_asignados, totales, sufijo),
+        fig.suptitle("%s — %d eventos asignados (de %d totales) — %d sospechosos%s"
+                     % (nombre_popup, n_asignados, totales, sospechosos, sufijo),
                      fontsize=12, fontweight='bold', y=0.98)
     elif n_asignados:
-        fig.suptitle("%s — %d eventos asignados%s"
-                     % (nombre_popup, n_asignados, sufijo),
+        fig.suptitle("%s — %d eventos asignados — %d sospechosos%s"
+                     % (nombre_popup, n_asignados, sospechosos, sufijo),
                      fontsize=12, fontweight='bold', y=0.98)
     fig.legend(handles=handles_leyenda, loc='lower center',
                bbox_to_anchor=(0.5, 0.02), ncol=len(handles_leyenda),
@@ -1066,6 +1204,7 @@ def plotear_perfil(eventos, perfil, fuente, percibidos, n_asignados=None,
     """
     total_eventos = 0
     percibidos = 0
+    sospechosos = 0
 
     extent = _extent_planta_por_eventos(eventos, perfil)
     if extent is None:
@@ -1077,7 +1216,6 @@ def plotear_perfil(eventos, perfil, fuente, percibidos, n_asignados=None,
     # --- Planta (izquierda) ---
     ax_planta = fig.add_subplot(1, 2, 1, projection=ccrs.PlateCarree())
     _base_mapa_planta(ax_planta, lon_min, lon_max, lat_min, lat_max)
-    _sismicidad_planta(ax_planta, lon_min, lon_max, lat_min, lat_max)
     _localidades_planta(ax_planta, lon_min, lon_max, lat_min, lat_max)
     scatter, eventos_plot = _marcadores_planta(ax_planta, eventos, fuente)
     handles_leyenda = _handles_eventos(fuente) + [_handle_sismicidad()]
@@ -1140,6 +1278,8 @@ def plotear_perfil(eventos, perfil, fuente, percibidos, n_asignados=None,
         bordes.append(borde[0])
         grosores.append(grosor[0])
         eventos_perfil.append(evento)
+        if evento.get('sospechoso'):
+            sospechosos += 1
 
         if evento.get('id') is not None and etiquetas_perfil:
             t = ax_perfil.text(x_km, prof_punto, str(evento.get('id', '')),
@@ -1203,12 +1343,12 @@ def plotear_perfil(eventos, perfil, fuente, percibidos, n_asignados=None,
     if fuente == "eventquery" and percibidos:
         sufijo = " — %d percibidos" % percibidos
     if totales:
-        fig.suptitle("Perfil %s — %d eventos asignados (de %d totales)%s"
-                     % (perfil["id"], n_asignados, totales, sufijo),
+        fig.suptitle("Perfil %s — %d eventos asignados (de %d totales) — %d sospechosos%s"
+                     % (perfil["id"], n_asignados, totales, sospechosos, sufijo),
                      fontsize=12, fontweight='bold', y=0.98)
     else:
-        fig.suptitle("Perfil %s — %d eventos asignados%s"
-                     % (perfil["id"], n_asignados, sufijo),
+        fig.suptitle("Perfil %s — %d eventos asignados — %d sospechosos%s"
+                     % (perfil["id"], n_asignados, sospechosos, sufijo),
                      fontsize=12, fontweight='bold', y=0.98)
     fig.legend(handles=handles_leyenda, loc='lower center',
                bbox_to_anchor=(0.5, 0.02), ncol=len(handles_leyenda),
@@ -1308,11 +1448,21 @@ def main():
 
     if sin_perfil and not despliegue_detenido():
         _registrar_progreso("Eventos sin perfil")
-        p, n = plotear_sin_perfil(sin_perfil, fuente, percibidos,
-                                  n_asignados=conteo_por_perfil.get("(sin perfil)"),
-                                  totales=conteo_total)
-        percibidos += p
-        total_por_perfil["(sin perfil)"] = n
+        nacional, insular, antartico = _categorizar_por_territorio(sin_perfil)
+        
+        for nombre, eventos_territorio in [
+            ("Nacional", nacional),
+            ("Insular", insular),
+            ("Antártico", antartico)
+        ]:
+            if eventos_territorio:
+                p, n = plotear_planta(
+                    eventos_territorio, fuente, perfil=None,
+                    n_asignados=conteo_por_perfil.get(f"({nombre})"),
+                    totales=conteo_total, territorio=nombre
+                )
+                percibidos += p
+                total_por_perfil[nombre] = n
 
     if despliegue_detenido():
         print("Despliegue detenido por el usuario.")
