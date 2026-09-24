@@ -7,6 +7,8 @@ import datetime
 from datetime import timedelta
 import pandas as pd
 
+import rutas
+
 # parametros de los dos niveles de filtro (amplio y estricto)
 MAX_SEG_AMPLIO=6
 MAX_LAT_LON_AMPLIO=2.0
@@ -18,9 +20,9 @@ cabecera="fecha hora latitud longitud prof mag tipomag analista percibido\n"
 
 def comparar(listacsv_1, listacsv_2, max_seg, max_lat, max_lon, sufijo):
     # archivos de salida
-    archivo=open("no_pub_todos_"+sufijo+".txt", "w")
-    archivo1=open("no_act_"+sufijo+".txt", "w")
-    archivo2=open("no_pub_desde_2_5_"+sufijo+".txt", "w")
+    archivo=open(rutas.p_informes("no_pub_todos_"+sufijo+".txt"), "w")
+    archivo1=open(rutas.p_informes("no_act_"+sufijo+".txt"), "w")
+    archivo2=open(rutas.p_informes("no_pub_desde_2_5_"+sufijo+".txt"), "w")
 
     archivo.write(cabecera)
     archivo1.write(cabecera)
@@ -117,7 +119,7 @@ def comparar(listacsv_1, listacsv_2, max_seg, max_lat, max_lon, sufijo):
         pub=0
 
     # crea csv para eventos no publicados
-    salida="no_pub_desde_2_5_"+sufijo+".csv"
+    salida=rutas.p_datos("no_pub_desde_2_5_"+sufijo+".csv")
     if listanopub:
         df = pd.DataFrame(listanopub)
         df.columns=['Fecha_Hora', 'Latitud', 'Longitud', 'Prof.', 'Mag.', 'Tipo_mag.', 'Analista']

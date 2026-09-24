@@ -7,6 +7,8 @@ from os import remove
 import operator
 import pandas as pandasForSortingCSV
 
+import rutas
+
 sismos={}
 lista=[]
 newlista=[]
@@ -17,9 +19,9 @@ linealista=''
 #time.sleep(50)
 
 # genera txt agregando un cero a dias menores a 10 y separa el dia del mes
-archivo=open("excluidos.txt")
-archivo1=open("excluidos_tmp_1.txt", "w")
-revisar=open("revisar.txt", "w")
+archivo=open(rutas.p_informes("excluidos.txt"))
+archivo1=open(rutas.p_trabajo("excluidos_tmp_1.txt"), "w")
+revisar=open(rutas.p_informes("revisar.txt"), "w")
 
 for linea in archivo:
 	sismo=linea.split()
@@ -86,7 +88,7 @@ for linea in archivo:
 		revisar.write(linealista+"\n")
 
 # crea archivo salida excluidos_collect.csv
-archivo1=open("excluidos_tmp_1.txt")
+archivo1=open(rutas.p_trabajo("excluidos_tmp_1.txt"))
 
 listacsv=[]
 numeventofinal=0
@@ -127,7 +129,7 @@ for linea in archivo1:
 
 df = pd.DataFrame(listacsv)
 df.columns=['Fecha_Hora', 'Analista']
-salida='excluidos_tmp.csv'
+salida=rutas.p_trabajo('excluidos_tmp.csv')
 df.to_csv(salida)
 
 # Asigna datos del csv de origen
@@ -140,14 +142,14 @@ salida.sort_values(["Fecha_Hora"],
                     inplace=True)
   
 # Crea archivo .csv ordenado
-salida_csv = 'excluidos_tmp_sort.csv'
+salida_csv = rutas.p_trabajo('excluidos_tmp_sort.csv')
 salida.to_csv(salida_csv)
 
 # borra .txt y .csv temporales
-remove('excluidos.txt')
-remove('excluidostmp1.txt')
-os.rename('excluidos_tmp_1.txt', 'excluidos.txt')
-remove('excluidos_tmp.csv')
+remove(rutas.p_informes('excluidos.txt'))
+remove(rutas.p_trabajo('excluidostmp1.txt'))
+os.rename(rutas.p_trabajo('excluidos_tmp_1.txt'), rutas.p_informes('excluidos.txt'))
+remove(rutas.p_trabajo('excluidos_tmp.csv'))
 
 csvData = open(salida_csv, encoding='utf-8')
 csvreader = csv.reader(csvData)
@@ -173,9 +175,9 @@ for linea in csvreader:
 # crea .csv final de salida
 df = pd.DataFrame(listacsv)
 df.columns=['Fecha_Hora', 'Analista']
-salida='excluidos.csv'
+salida=rutas.p_datos('excluidos.csv')
 df.to_csv(salida)
 
 # borra .csv temporal
-remove('excluidos_tmp_sort.csv')
+remove(rutas.p_trabajo('excluidos_tmp_sort.csv'))
 

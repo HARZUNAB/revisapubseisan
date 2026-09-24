@@ -9,6 +9,8 @@ import operator
 import pandas as pandasForSortingCSV
 from os import remove
 
+import rutas
+
 csv_file = open(sys.argv[1])
 #fh = open(sys.argv[2],"w", encoding='utf-8')
 fh = open(sys.argv[2],"w")
@@ -23,7 +25,7 @@ csvData = csvData.sort_values(["time"], ascending=True)
 
 # Crea archivo .csv ordenado
 fecha_hoy_csv = datetime.datetime.today().strftime("%Y%m%d%H%M%S")
-salidacsv = 'csvData_' + fecha_hoy_csv + '.csv'
+salidacsv = rutas.p_trabajo('csvData_' + fecha_hoy_csv + '.csv')
 csvData.to_csv(salidacsv)
 
 
@@ -88,12 +90,12 @@ if num_datos>0:
 
 	df = pd.DataFrame(listacsv)
 	df.columns=['Fecha_Hora', 'Latitud', 'Longitud', 'Prof.', 'Mag.', 'Tipo_mag.', 'Referencia', 'Percep', "Est_leidas", "Autor", "Estruc_origen", "Estruc_Final", "Est_add", "Est_eli", "Act. web", "Observaciones"]
-	salida='new_'+sys.argv[1]
+	salida=rutas.p_datos('new_'+os.path.basename(sys.argv[1]))
 	df.to_csv(salida)
 
 	df2 = pd.DataFrame(listacsv2)
 	df2.columns=['Fecha_Hora', 'Latitud', 'Longitud', 'Prof.', 'Mag.', 'Tipo_mag.', 'Referencia', 'Percep.']
-	salida2='new_2_'+sys.argv[1]
+	salida2=rutas.p_datos('new_2_'+os.path.basename(sys.argv[1]))
 	df2.to_csv(salida2)
 
 	print('Nuevos archivos generados...')

@@ -15,9 +15,13 @@ Uso:
 
 Cada archivo JSON contiene UNA lista con todos los eventos, cada uno con su
 campo "perfil" (id del perfil asignado o None si no corresponde a ninguno).
-Este script agrupa los eventos en memoria por perfil y abre una ventana por
-perfil (planta a la izquierda, perfil a la derecha). Los eventos sin perfil
-se plotean solo sobre la planta.
+Este script agrupa los eventos en memoria por perfil y abre un PANEL DE
+ANÁLISIS: una tabla resumen de todos los perfiles (con su mini-perfil) desde
+donde el usuario decide qué ver en detalle —abrir perfiles/mapas en paralelo,
+filtrar por sospechosos, ver los mapas de territorio (Nacional/Insular/
+Antártico) o restablecer la vista de inicio—. Sin backend interactivo cae al
+flujo secuencial: una ventana por perfil (planta a la izquierda, perfil a la
+derecha) y los eventos sin perfil solo sobre la planta.
 """
 
 import os
@@ -38,6 +42,7 @@ from PIL import Image
 from adjustText import adjust_text
 
 import asigna_perfiles as ap
+import rutas
 
 Image.MAX_IMAGE_PIXELS = None  # desactiva el límite de seguridad de PIL
 
@@ -65,8 +70,10 @@ ANCHO_TEXTO_NACIONAL = 30
 # lentos al dibujar). Default 100 (buen equilibrio pantalla).
 DPI = 100
 
-# PROF_MAX_KM: profundidad máxima (km) mostrada en el eje vertical del perfil.
-# El eje va desde -PROF_MAX_KM (abajo) hasta ALT_MAR_KM (arriba).
+# PROF_MAX_KM: profundidad MÍNIMA (km) mostrada en el eje vertical del perfil
+# (piso). El eje va desde -prof_fondo (abajo) hasta ALT_MAR_KM (arriba), donde
+# prof_fondo = _prof_fondo_perfil(...) cubre el slab y los eventos del catálogo
+# con margen, de modo que los eventos/slab más profundos no queden recortados.
 PROF_MAX_KM = 250
 
 # ALT_MAR_KM: kilómetros positivos por encima del nivel del mar que se muestran
@@ -476,6 +483,193 @@ def _sismicidad_perfil(ax_perfil, perfil):
                           rasterized=True)
 
 
+def _resumen_perfil(eventos, fuente):
+    """
+    Resumen de un grupo de eventos (un perfil) para la tabla del panel:
+    (total, sospechosos, percibidos, along_min, along_max).
+    along_min/along_max son None si ningún evento tiene along_km válido.
+    """
+    total = 0
+    sospechosos = 0
+    percibidos = 0
+    alongs = []
+    for ev in eventos:
+        try:
+            float(ev['latitud'])
+            float(ev['longitud'])
+        except (TypeError, ValueError, KeyError):
+            continue
+        total += 1
+        if ev.get('sospechoso'):
+            sospechosos += 1
+        if fuente == "eventquery" and ev.get('percibido') == "S":
+            percibidos += 1
+        try:
+            alongs.append(float(ev.get('along_km')))
+        except (TypeError, ValueError):
+            pass
+    a_min = min(alongs) if alongs else None
+    a_max = max(alongs) if alongs else None
+    return total, sospechosos, percibidos, a_min, a_max
+
+
+def _prof_fondo_perfil(perfil, profundidades_eventos):
+    """
+    Fondo (km) del eje de profundidad del perfil: cubre el slab y los eventos
+    del catálogo, con ~10 % de margen. PROF_MAX_KM actúa como piso, de modo
+    que los perfiles someros no cambian. 'profundidades_eventos' son valores
+    positivos (km).
+    """
+    base = 0.0
+    for d in profundidades_eventos:
+        try:
+            d = float(d)
+        except (TypeError, ValueError):
+            continue
+        if d > base:
+            base = d
+    try:
+        sz = np.asarray(perfil["slab"]["depth"], dtype=float)
+        if sz.size and np.any(~np.isnan(sz)):
+            base = max(base, float(np.nanmax(sz)))
+    except (KeyError, TypeError, ValueError):
+        pass
+    return max(PROF_MAX_KM, base * 1.10)
+
+
+def _mini_perfil(ax, perfil, eventos, fuente, mostrar_hist=False):
+    """
+    Miniatura ligera del perfil para el panel de análisis: topografía, slab y
+    eventos (con borde violeta en los sospechosos). Por defecto SIN fondo
+    histórico ni relieve (para dibujarse en fracciones de segundo a lo largo de
+    los ~32 perfiles); si mostrar_hist es True se añade la sismicidad histórica
+    (misma caché que el detalle).
+    """
+    sp = perfil["slab"]["p"]
+    sz = perfil["slab"]["depth"]
+
+    if mostrar_hist:
+        _sismicidad_perfil(ax, perfil)
+
+    try:
+        tp = perfil.get("topo_p")
+        alt = perfil.get("topo_alt")
+        if tp is not None and len(tp) > 1:
+            ax.plot(tp, np.asarray(alt) / 1000.0, color=COLOR_TOPO, lw=0.9,
+                    zorder=3, rasterized=True)
+    except Exception:
+        pass
+
+    if len(sp) > 0:
+        mask = ~np.isnan(sz)
+        if np.any(mask):
+            ax.plot(sp[mask], -sz[mask], color=COLOR_SLAB, lw=1.6, zorder=4,
+                    rasterized=True)
+
+    xs = []
+    ys = []
+    colores = []
+    bordes = []
+    grosores = []
+    total = 0
+    sospechosos = 0
+    for ev in eventos:
+        try:
+            prof_punto = float(ev['prof']) * -1
+            x_km = float(ev.get('along_km'))
+        except (TypeError, ValueError, KeyError):
+            continue
+        total += 1
+        if ev.get('sospechoso'):
+            sospechosos += 1
+        xs.append(x_km)
+        ys.append(prof_punto)
+        colores.append(_color_evento(fuente, ev))
+        b, g = _bordes_eventos([ev])
+        bordes.append(b[0])
+        grosores.append(g[0])
+    if xs:
+        ax.scatter(xs, ys, s=22, c=colores, edgecolors=bordes,
+                   linewidths=grosores, zorder=10, alpha=0.95, rasterized=True)
+
+    # Ejes: mismo rango que el detalle para que las miniaturas sean comparables.
+    min_x = None
+    max_x = None
+    if len(sp) > 0:
+        validos = sp[~np.isnan(sp)]
+        if len(validos):
+            min_x = float(validos.min())
+            max_x = float(validos.max())
+    if min_x is None and xs:
+        min_x = min(xs)
+        max_x = max(xs)
+    if min_x is None:
+        return False
+    ax.set_xlim(min_x, max_x)
+    ax.set_ylim(-_prof_fondo_perfil(perfil, [-y for y in ys]), ALT_MAR_KM)
+
+    ax.grid(True, linestyle=':', alpha=0.35, color='gray', zorder=0)
+    for lado in ('top', 'right'):
+        ax.spines[lado].set_visible(False)
+    ax.tick_params(axis='both', labelsize=6, length=2)
+
+    titulo = perfil["id"]
+    if total:
+        titulo += "  ·  %d ev" % total
+    if sospechosos:
+        titulo += "  ·  %d sospechosos" % sospechosos
+    ax.set_title(titulo, fontsize=7,
+                 fontweight='bold',
+                 color=('#8b0000' if sospechosos else 'black'))
+    return True
+
+
+def _mini_mapa_territorio(ax, nombre, eventos, fuente):
+    """
+    Mini-mapa simplificado de un territorio para el sub-panel de eventos sin
+    perfil: fondo claro, costas/fronteras y eventos. SIN relieve, grilla,
+    localidades ni adjust_text (barato: ~decenas de ms tras la primera carga
+    de las features de cartopy). Devuelve True si dibujó.
+    """
+    extent = _extent_planta_por_eventos(eventos, perfil=None, territorio=nombre)
+    if extent is None:
+        extent = _extent_territorio(nombre)
+    if extent is None:
+        return False
+    lon_min, lon_max, lat_min, lat_max = extent
+    ax.set_extent([lon_min, lon_max, lat_min, lat_max], crs=ccrs.PlateCarree())
+    ax.set_facecolor("#eef3f7")
+
+    ax.add_feature(cfeature.COASTLINE.with_scale(NIVEL_GEO),
+                   edgecolor='#111111', linewidth=0.7, zorder=2)
+    ax.add_feature(cfeature.BORDERS.with_scale(NIVEL_GEO),
+                   edgecolor=COLOR_FRONTERA, linestyle=ESTILO_FRONTERA,
+                   linewidth=0.6, zorder=2)
+
+    eventos_plot = []
+    for e in eventos:
+        try:
+            float(e['longitud'])
+            float(e['latitud'])
+        except (TypeError, ValueError, KeyError):
+            continue
+        eventos_plot.append(e)
+    if eventos_plot:
+        lons = [float(e['longitud']) for e in eventos_plot]
+        lats = [float(e['latitud']) for e in eventos_plot]
+        colores = [_color_evento(fuente, e) for e in eventos_plot]
+        bordes, grosores = _bordes_eventos(eventos_plot)
+        ax.scatter(lons, lats, s=28, c=colores, alpha=0.95,
+                   edgecolors=bordes, linewidths=grosores, zorder=5,
+                   transform=ccrs.PlateCarree())
+
+    total = len(eventos_plot)
+    sosp = sum(1 for e in eventos_plot if e.get('sospechoso'))
+    ax.set_title("%s  ·  %d ev · %d sospechosos" % (nombre, total, sosp),
+                 fontsize=9, fontweight='bold')
+    return True
+
+
 _cache_regiones = None
 
 
@@ -722,9 +916,17 @@ def _extent_planta_por_eventos(eventos, perfil=None, territorio=None, margen_adi
 
 
 def _raiz_tk():
-    """Devuelve la ventana raíz Tk compartida de matplotlib (TkAgg) o None."""
+    """Devuelve la ventana raíz Tk compartida de matplotlib (TkAgg) o None.
+
+    Solo devuelve la raíz si existe al menos una figura real: con cero
+    figuras, plt.get_current_fig_manager() puede devolver un manager residual
+    cuya ventana es una raíz Tk vacía ("Figure 1" sin contenido), y usarla
+    impediría crear el ancla oculta de la sesión.
+    """
     try:
         import tkinter
+        if not plt.get_fignums():
+            return None
         fm = plt.get_current_fig_manager()
         win = fm.window
         top = win.winfo_toplevel()
@@ -841,6 +1043,31 @@ def _limpiar_resaltado(ax):
             t.remove()
 
 
+def _ubicacion_vineta(ax, x, y):
+    """
+    Elige el lado en que se abre la viñeta para que no se salga de la figura:
+    hacia la izquierda si el evento cae en la mitad derecha de los ejes, y
+    hacia abajo si está cerca del borde superior. Devuelve
+    (xytext, ha, va) para ax.annotate.
+    """
+    try:
+        x0, x1 = ax.get_xlim()
+        y0, y1 = ax.get_ylim()
+    except Exception:
+        x0, x1, y0, y1 = 0.0, 1.0, 0.0, 1.0
+    fx = (x - x0) / (x1 - x0) if x1 > x0 else 0.5
+    fy = (y - y0) / (y1 - y0) if y1 > y0 else 0.5
+    if fx > 0.5:
+        dx, ha = -6, 'right'
+    else:
+        dx, ha = 6, 'left'
+    if fy > 0.75:
+        dy, va = -6, 'top'
+    else:
+        dy, va = 25, 'bottom'
+    return (dx, dy), ha, va
+
+
 def _resaltar_evento(ax, ev, lon=None, lat=None, x_km=None, prof_km=None,
                      anotar=True):
     """
@@ -857,9 +1084,11 @@ def _resaltar_evento(ax, ev, lon=None, lat=None, x_km=None, prof_km=None,
                         edgecolors=COLOR_RESALTADO, linewidths=2.5, zorder=12,
                         transform=ccrs.PlateCarree(), picker=False)
         if anotar:
+            xytext, ha, va = _ubicacion_vineta(ax, lon, lat)
             anot = ax.annotate(
-                contenido, xy=(lon, lat), xytext=(0, 25),
-                textcoords='offset points', fontsize=8, color='black',
+                contenido, xy=(lon, lat), xytext=xytext,
+                textcoords='offset points', ha=ha, va=va, fontsize=8,
+                color='black',
                 bbox=dict(boxstyle='round,pad=0.4', fc='lightyellow',
                           ec='navy', alpha=0.95),
                 arrowprops=dict(arrowstyle='-', color='navy', lw=0.8),
@@ -869,9 +1098,11 @@ def _resaltar_evento(ax, ev, lon=None, lat=None, x_km=None, prof_km=None,
                         edgecolors=COLOR_RESALTADO, linewidths=2.5, zorder=12,
                         picker=False)
         if anotar:
+            xytext, ha, va = _ubicacion_vineta(ax, x_km, prof_km)
             anot = ax.annotate(
-                contenido, xy=(x_km, prof_km), xytext=(0, 25),
-                textcoords='offset points', fontsize=8, color='black',
+                contenido, xy=(x_km, prof_km), xytext=xytext,
+                textcoords='offset points', ha=ha, va=va, fontsize=8,
+                color='black',
                 bbox=dict(boxstyle='round,pad=0.4', fc='lightyellow',
                           ec='navy', alpha=0.95),
                 arrowprops=dict(arrowstyle='-', color='navy', lw=0.8),
@@ -1048,17 +1279,112 @@ def _agregar_boton_detener(fig):
 
 
 def detener():
-    """Detiene el despliegue cerrando todas las figuras abiertas."""
+    """Detiene el despliegue cerrando las figuras abiertas de detalle."""
     global _detener_despliegue
     _detener_despliegue = True
     try:
-        plt.close('all')
+        if _panel_activo and _fig_ancla is not None:
+            # En el modo panel se cierran solo las ventanas de detalle; la
+            # figura ancla (y con ella la raíz Tk del panel) sigue viva.
+            for num in list(plt.get_fignums()):
+                if num != _fig_ancla.number:
+                    plt.close(num)
+        else:
+            plt.close('all')
     except Exception:
         pass
 
 
 def despliegue_detenido():
     return _detener_despliegue
+
+
+# Estado del panel de análisis. _panel_activo indica que el usuario navega
+# desde el panel (ya hay un mainloop Tk corriendo), por lo que el modo
+# "bloqueante" debe esperar el cierre bombeando eventos en vez de anidar un
+# segundo mainloop. _fig_ancla mantiene viva la raíz Tk de la sesión.
+_panel_activo = False
+_fig_ancla = None
+# Ids de percibidos ya escritos en percibidos.txt (evita duplicados cuando el
+# usuario abre el mismo perfil más de una vez desde el panel).
+_percibidos_escritos = set()
+
+
+def _registrar_percibido(evento):
+    """
+    Registra el evento como percibido VISTO en esta sesión: lo escribe en
+    percibidos.txt la primera vez (dedup por id) y lo suma al contador de
+    vistos (_percibidos_escritos). Devuelve True si quedó registrado aquí.
+    """
+    if evento.get('percibido') != "S":
+        return False
+    key = evento.get('id')
+    if key in _percibidos_escritos:
+        return False
+    try:
+        prof_punto = -float(evento['prof'])
+        linea = "{} {} {} {} {} {} {} {}\n".format(
+            key, evento.get('fecha hora'),
+            float(evento['latitud']), float(evento['longitud']),
+            prof_punto, evento.get('magnitud'),
+            evento.get('tipo'), evento.get('percibido'))
+        with open(rutas.p_ploteo("percibidos.txt"), "a") as archivo_perc:
+            archivo_perc.write(linea)
+    except (TypeError, ValueError, KeyError, OSError):
+        return False
+    _percibidos_escritos.add(key)
+    return True
+
+
+def _asegurar_raiz():
+    """
+    Devuelve la raíz Tk compartida de TkAgg, creándola si aún no existe ninguna
+    figura (el panel de análisis es la primera ventana de la sesión). Se usa
+    una figura 'ancla' oculta que mantiene viva la raíz hasta el cierre.
+    Devuelve None si el backend no es interactivo (fallback al flujo
+    secuencial).
+    """
+    global _fig_ancla
+    raiz = _raiz_tk()
+    if raiz is not None:
+        return raiz
+    try:
+        fig_ancla = plt.figure(figsize=(0.1, 0.1), dpi=1)
+        mgr = fig_ancla.canvas.manager
+        if mgr is not None:
+            # La figura 'ancla' se crea SIN mostrarse (no se llama a show()):
+            # solo se oculta su ventana para que la raíz Tk exista y sirva de
+            # maestro para el panel y las figuras de detalle, sin que nunca
+            # llegue a verse el cuadro vacío "Figure 1".
+            try:
+                mgr.window.withdraw()
+            except Exception:
+                pass
+        raiz = _raiz_tk()
+        if raiz is not None:
+            _fig_ancla = fig_ancla  # se conserva para no cerrar la raíz
+            return raiz
+    except Exception:
+        pass
+    return None
+
+
+def _mostrar_figura(bloquear):
+    """
+    Muestra la figura actual respetando el modo de interacción:
+      - bloquear=False -> no bloquea (abre ventanas en paralelo). Se muestra
+        SOLO la figura actual con el manager, sin pasar por plt.show() (que
+        recorrería y re-mapearía el ancla oculta de la raíz Tk).
+      - bloquear=True  -> bloquea hasta cerrar la ventana (modo secuencial,
+        fuera del panel) con plt.show() normal.
+    """
+    mgr = getattr(plt.gcf().canvas, 'manager', None)
+    if bloquear:
+        plt.show(block=True)
+    elif mgr is not None:
+        mgr.show()
+    else:
+        plt.show(block=False)
 
 
 def _indicador_modo_interaccion(fig):
@@ -1234,7 +1560,8 @@ def _layout_nacional(fig, ax, ax_txt, lon_min, lon_max, lat_min, lat_max,
 
 
 def plotear_planta(eventos, fuente, perfil=None, n_asignados=None, totales=None,
-                   territorio=None):
+                   territorio=None, bloquear=True, mostrar_json=True,
+                   con_boton_detener=True):
     """
     Crea una ventana con la vista en planta (relieve + localidades + eventos).
     Si se pasa 'perfil', el área visible se deriva del recorrido del slab;
@@ -1255,6 +1582,7 @@ def plotear_planta(eventos, fuente, perfil=None, n_asignados=None, totales=None,
         total_eventos += 1
         if fuente == "eventquery" and ev.get('percibido') == "S":
             percibidos += 1
+            _registrar_percibido(ev)
         if ev.get('sospechoso'):
             sospechosos += 1
 
@@ -1330,8 +1658,9 @@ def plotear_planta(eventos, fuente, perfil=None, n_asignados=None, totales=None,
         if perfil is not None:
             texto_titulo = "%s\n%s" % (titulo, subtitulo)
         ax.set_title(texto_titulo, fontsize=11, fontweight='bold', pad=10)
-    mostrar_json_en_popup(nombre_popup, eventos, fuente, percibidos,
-                          total_eventos)
+    if mostrar_json:
+        mostrar_json_en_popup(nombre_popup, eventos, fuente, percibidos,
+                              total_eventos)
     if territorio is not None:
         # Los mapas de territorio usan un único título compacto (sin suptitle).
         pass
@@ -1355,14 +1684,16 @@ def plotear_planta(eventos, fuente, perfil=None, n_asignados=None, totales=None,
                fontsize=8, frameon=True)
     if not layout_nacional:
         plt.tight_layout(rect=[0, 0.10, 1, 0.94])
-    _agregar_boton_detener(fig)
+    if con_boton_detener:
+        _agregar_boton_detener(fig)
     _indicador_modo_interaccion(fig)
-    plt.show()
+    _mostrar_figura(bloquear)
     return percibidos, total_eventos
 
 
 def plotear_perfil(eventos, perfil, fuente, percibidos, n_asignados=None,
-                   totales=None):
+                   totales=None, bloquear=True, mostrar_json=True,
+                   con_boton_detener=True):
     """
     Crea una figura con dos subplots: vista en planta (izquierda) y perfil
     de subducción (derecha), con etiquetas de id y selección interactiva.
@@ -1455,13 +1786,7 @@ def plotear_perfil(eventos, perfil, fuente, percibidos, n_asignados=None,
 
         if fuente == "eventquery" and evento.get('percibido') == "S":
             percibidos += 1
-            with open("percibidos.txt", "a") as archivo_perc:
-                linea = "{} {} {} {} {} {} {} {}\n".format(
-                    evento.get('id'), evento.get('fecha hora'),
-                    float(evento['latitud']), float(evento['longitud']),
-                    prof_punto, evento.get('magnitud'),
-                    evento.get('tipo'), evento.get('percibido'))
-                archivo_perc.write(linea)
+            _registrar_percibido(evento)
 
     scatter_perf = None
     if xs:
@@ -1491,19 +1816,21 @@ def plotear_perfil(eventos, perfil, fuente, percibidos, n_asignados=None,
 
     minX = float(sp.min())
     maxX = float(sp.max())
+    prof_fondo = _prof_fondo_perfil(perfil, [-y for y in ys])
     ax_perfil.set_xlim(minX, maxX)
-    ax_perfil.set_ylim(-PROF_MAX_KM, ALT_MAR_KM)
+    ax_perfil.set_ylim(-prof_fondo, ALT_MAR_KM)
     ax_perfil.set_xlabel("Distancia a lo largo (km)", fontsize=9,
                          fontweight='bold')
     ax_perfil.set_ylabel("Profundidad (km)", fontsize=9, fontweight='bold')
     ax_perfil.tick_params(axis='both', labelsize=8)
     ax_perfil.grid(True, linestyle=':', alpha=0.4, color='gray', zorder=0)
-    ax_perfil.set_title("Perfil %s (%.0f-%.0f km | 0-%d km de prof)"
-                        % (perfil["id"], minX, maxX, PROF_MAX_KM),
+    ax_perfil.set_title("Perfil %s (%.0f-%.0f km | 0-%.0f km de prof)"
+                        % (perfil["id"], minX, maxX, prof_fondo),
                         fontsize=11, fontweight='bold', pad=10)
 
-    mostrar_json_en_popup("Perfil %s" % perfil["id"], eventos, fuente,
-                          percibidos, total_eventos)
+    if mostrar_json:
+        mostrar_json_en_popup("Perfil %s" % perfil["id"], eventos, fuente,
+                              percibidos, total_eventos)
     if n_asignados is None:
         n_asignados = total_eventos
     sufijo = ""
@@ -1521,27 +1848,526 @@ def plotear_perfil(eventos, perfil, fuente, percibidos, n_asignados=None,
                bbox_to_anchor=(0.5, 0.02), ncol=len(handles_leyenda),
                fontsize=8, frameon=True)
     plt.tight_layout(rect=[0, 0.10, 1, 0.94])
-    _agregar_boton_detener(fig)
+    if con_boton_detener:
+        _agregar_boton_detener(fig)
     _indicador_modo_interaccion(fig)
-    plt.show()
+    _mostrar_figura(bloquear)
     return percibidos, total_eventos
 
 
 def plotear_ventana(eventos, perfil, fuente, percibidos, n_asignados=None,
-                    totales=None):
+                    totales=None, bloquear=True, mostrar_json=True,
+                    con_boton_detener=True):
     """
     Abre la ventana de un perfil (planta + perfil). Se mantiene este alias
     para no cambiar el resto del flujo. Devuelve (percibidos, total_eventos).
     """
     return plotear_perfil(eventos, perfil, fuente, percibidos,
-                          n_asignados, totales)
+                          n_asignados, totales, bloquear=bloquear,
+                          mostrar_json=mostrar_json,
+                          con_boton_detener=con_boton_detener)
 
 
 def plotear_sin_perfil(eventos, fuente, percibidos, n_asignados=None,
-                       totales=None):
+                       totales=None, bloquear=True, mostrar_json=True,
+                       con_boton_detener=True):
     """Plotea los eventos sin perfil solo sobre la planta."""
     return plotear_planta(eventos, fuente, perfil=None,
-                          n_asignados=n_asignados, totales=totales)
+                          n_asignados=n_asignados, totales=totales,
+                          bloquear=bloquear, mostrar_json=mostrar_json,
+                          con_boton_detener=con_boton_detener)
+
+
+def _panel_analisis(grupos, perfiles_por_id, sin_perfil, fuente,
+                    conteo_por_perfil, conteo_total, total_eventos,
+                    n_sospechosos, total_percibidos=None):
+    """
+    Ventana inicial de análisis: tabla resumen de todos los perfiles con su
+    mini-perfil, y acciones para abrir cada uno en detalle (en paralelo),
+    abrir los mapas de territorio, filtrar por sospechosos, añadir la
+    sismicidad histórica al mini-perfil y restablecer la vista de inicio. Al
+    cerrar (Salir), los callbacks pendientes quedan desactivados para no tocar
+    widgets ya destruidos.
+
+    Se apoya en la raíz Tk compartida (_asegurar_raiz). Devuelve True si el
+    panel quedó operativo (el programa debe mantener vivo el mainloop). Si no
+    hay backend interactivo devuelve False (quien llama cae al flujo
+    secuencial).
+    """
+    global _panel_activo
+    import tkinter as tk
+    from tkinter import ttk
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+    raiz = _asegurar_raiz()
+    if raiz is None:
+        return False
+    _panel_activo = True
+
+    estado = {'percibidos': 0, 'filtro_sospechosos': False, 'activo': True,
+              'mostrar_hist': False}
+    # Referencia al sub-panel de territorios (para poder cerrarlo desde Salir).
+    terr_state = {'panel': None, 'cerrar': None}
+    con_perfil = sum(len(v) for v in grupos.values())
+
+    panel = tk.Toplevel(raiz)
+    panel.title("Panel de análisis · %s — %d eventos (%d con perfil, %s)"
+                % (fuente, total_eventos, con_perfil,
+                   ("%d sospechosos" % n_sospechosos) if n_sospechosos else
+                   "sin sospechosos"))
+    panel.geometry("980x600")
+    panel.minsize(860, 480)
+
+    def _salir():
+        global _panel_activo
+        # Marca la sesión como inactiva ANTES de destruir widgets: así los
+        # callbacks Tk que queden en cola se convierten en no-op y no tocan
+        # widgets ya destruidos (evita "invalid command name").
+        estado['activo'] = False
+        _panel_activo = False
+        # Cierra el sub-panel de territorios si estuviera abierto.
+        cerrar_terr = terr_state.get('cerrar')
+        if cerrar_terr is not None:
+            try:
+                cerrar_terr()
+            except Exception:
+                pass
+        # Cierra solo las figuras de detalle: el ancla sostiene la raíz Tk.
+        try:
+            for num in list(plt.get_fignums()):
+                if _fig_ancla is None or num != _fig_ancla.number:
+                    plt.close(num)
+        except Exception:
+            pass
+        try:
+            fig_mini.clear()
+        except Exception:
+            pass
+        try:
+            panel.destroy()
+        except Exception:
+            pass
+        try:
+            raiz.quit()
+        except Exception:
+            pass
+
+    panel.protocol("WM_DELETE_WINDOW", _salir)
+
+    # --- Cabecera con resumen e indicaciones ---
+    marco_cab = tk.Frame(panel)
+    marco_cab.pack(fill='x', padx=8, pady=(8, 2))
+    etiqueta_resumen = None
+
+    def _actualizar_resumen():
+        if not estado['activo'] or etiqueta_resumen is None or not total_percibidos:
+            return
+        try:
+            if not etiqueta_resumen.winfo_exists():
+                return
+        except Exception:
+            return
+        etiqueta_resumen.config(
+            text="Percibidos vistos: %d de %d en el catálogo."
+                 % (len(_percibidos_escritos), total_percibidos))
+
+    if total_eventos:
+        tk.Label(marco_cab, justify='left', text=(
+            "%d eventos · %d con perfil · %d sospechosos · doble clic en una "
+            "fila para abrir el detalle" % (total_eventos, con_perfil,
+                                            n_sospechosos)),
+                 font=('', 10, 'bold')).pack(anchor='w')
+        if fuente == "eventquery" and total_percibidos:
+            etiqueta_resumen = tk.Label(marco_cab, justify='left', text="",
+                                        font=('', 9))
+            etiqueta_resumen.pack(anchor='w')
+            _actualizar_resumen()
+    else:
+        tk.Label(marco_cab, text="No hay eventos para analizar.",
+                 font=('', 10, 'bold')).pack(anchor='w')
+
+    # --- Zona principal: tabla (izquierda) + mini-perfil (derecha) ---
+    marco_principal = tk.Frame(panel)
+    marco_principal.pack(fill='both', expand=True, padx=8, pady=4)
+
+    marco_tabla = tk.Frame(marco_principal)
+    marco_tabla.pack(side='left', fill='both', expand=True)
+    columnas = ('n', 'perfil', 'eventos', 'sosp', 'perc', 'along')
+    arbol = ttk.Treeview(marco_tabla, columns=columnas, show='headings',
+                         height=20)
+    encabezados = [('n', '#', 38), ('perfil', 'Perfil', 60),
+                   ('eventos', 'Ev', 55), ('sosp', 'Sospechosos', 90),
+                   ('perc', 'Percibidos', 80), ('along', 'Along (km)', 120)]
+    for clave, texto, ancho in encabezados:
+        arbol.heading(clave, text=texto)
+        arbol.column(clave, width=ancho, minwidth=40, stretch=False)
+    barra = ttk.Scrollbar(marco_tabla, orient='vertical', command=arbol.yview)
+    arbol.configure(yscrollcommand=barra.set)
+    arbol.pack(side='left', fill='both', expand=True)
+    barra.pack(side='left', fill='y')
+
+    # --- Mini-perfil insertado en el panel ---
+    fig_mini = plt.Figure(figsize=(5.2, 3.4), dpi=82)
+    lienzo_mini = FigureCanvasTkAgg(fig_mini, master=marco_principal)
+    lienzo_mini.get_tk_widget().pack(side='left', fill='both', expand=True,
+                                     padx=(10, 0))
+    ax_mini = fig_mini.add_subplot(111)
+
+    # --- Lista de ids mostrados (índice de fila en el árbol) ---
+    filas = []
+
+    def _poblar_arbol():
+        if not estado['activo']:
+            return
+        arbol.delete(*arbol.get_children())
+        del filas[:]
+        for pid in sorted(grupos):
+            total, sosp, perc, a_min, a_max = _resumen_perfil(grupos[pid],
+                                                              fuente)
+            if estado['filtro_sospechosos'] and not sosp:
+                continue
+            if a_min is not None:
+                along = "%.0f-%.0f" % (a_min, a_max)
+            else:
+                along = "-"
+            iid = arbol.insert(
+                '', 'end',
+                values=(len(filas) + 1, pid, total, sosp, perc, along))
+            if sosp:
+                arbol.item(iid, tags=('sosp',))
+            filas.append(pid)
+        arbol.tag_configure('sosp', foreground='#8b0000',
+                            font=('', 10, 'bold'))
+
+    def _actualizar_mini():
+        if not estado['activo']:
+            return
+        sel = arbol.selection()
+        if not sel:
+            return
+        idx = arbol.index(sel[0])
+        if idx >= len(filas):
+            return
+        pid = filas[idx]
+        fig_mini.clear()
+        ax_nuevo = fig_mini.add_subplot(111)
+        _mini_perfil(ax_nuevo, perfiles_por_id[pid], grupos[pid], fuente,
+                     mostrar_hist=estado['mostrar_hist'])
+        fig_mini.canvas.draw_idle()
+
+    def _abrir_perfil_actual():
+        if not estado['activo']:
+            return
+        sel = arbol.selection()
+        if not sel:
+            return
+        idx = arbol.index(sel[0])
+        if idx >= len(filas):
+            return
+        pid = filas[idx]
+        perfil = perfiles_por_id[pid]
+        _registrar_progreso("Perfil %s" % pid)
+        p_, _ = plotear_ventana(grupos[pid], perfil, fuente,
+                                estado['percibidos'],
+                                n_asignados=conteo_por_perfil.get(pid),
+                                totales=conteo_total,
+                                bloquear=False,
+                                mostrar_json=False,
+                                con_boton_detener=False)
+        estado['percibidos'] += p_
+        _actualizar_resumen()
+
+    def _abrir_territorios():
+        if not estado['activo']:
+            return
+        if not sin_perfil:
+            print("No hay eventos sin perfil.")
+            return
+        nacional, insular, antartico = _categorizar_por_territorio(sin_perfil)
+        items = [(nombre, evs) for nombre, evs in [
+            ("Nacional", nacional), ("Insular", insular),
+            ("Antártico", antartico)] if evs]
+        if not items:
+            print("No hay eventos sin perfil.")
+            return
+        # Si ya está abierto, se trae al frente en vez de duplicarlo.
+        if terr_state.get('panel') is not None:
+            try:
+                terr_state['panel'].lift()
+                return
+            except Exception:
+                terr_state['panel'] = None
+
+        top = tk.Toplevel(raiz)
+        top.title("Mapas sin perfil · %s — %d eventos sin perfil"
+                  % (fuente, len(sin_perfil)))
+        top.geometry("780x520")
+        terr_activo = {'activo': True}
+
+        marco = tk.Frame(top)
+        marco.pack(fill='both', expand=True, padx=8, pady=8)
+        marco_tabla = tk.Frame(marco)
+        marco_tabla.pack(side='left', fill='y')
+        cols = ('terr', 'eventos', 'sosp', 'perc')
+        arbol_t = ttk.Treeview(marco_tabla, columns=cols, show='headings',
+                               height=8)
+        for clave, texto, ancho in [('terr', 'Territorio', 110),
+                                    ('eventos', 'Eventos', 70),
+                                    ('sosp', 'Sospechosos', 95),
+                                    ('perc', 'Percibidos', 85)]:
+            arbol_t.heading(clave, text=texto)
+            arbol_t.column(clave, width=ancho, minwidth=50, stretch=False)
+        arbol_t.pack(side='left', fill='y')
+
+        fig_mapa = plt.Figure(figsize=(4.6, 3.4), dpi=82)
+        lienzo = FigureCanvasTkAgg(fig_mapa, master=marco)
+        lienzo.get_tk_widget().pack(side='left', fill='both', expand=True,
+                                    padx=(10, 0))
+
+        datos = {}
+        for nombre, evs in items:
+            tot = len(evs)
+            sosp = sum(1 for e in evs if e.get('sospechoso'))
+            perc = sum(1 for e in evs if e.get('percibido') == 'S')
+            iid = arbol_t.insert('', 'end', values=(nombre, tot, sosp, perc))
+            datos[iid] = (nombre, evs)
+
+        def _redibujar_mini():
+            if not terr_activo['activo']:
+                return
+            sel = arbol_t.selection()
+            if not sel:
+                return
+            nombre, evs = datos[sel[0]]
+            fig_mapa.clear()
+            ax = fig_mapa.add_subplot(111, projection=ccrs.PlateCarree())
+            try:
+                _mini_mapa_territorio(ax, nombre, evs, fuente)
+            except Exception as e:
+                ax.set_title("No se pudo dibujar %s" % nombre, fontsize=9)
+                print("[Aviso] mini territorio %s: %s" % (nombre, e))
+            fig_mapa.canvas.draw_idle()
+
+        def _abrir_detalle_terr():
+            if not terr_activo['activo']:
+                return
+            sel = arbol_t.selection()
+            if not sel:
+                return
+            nombre, evs = datos[sel[0]]
+            _registrar_progreso("Territorio %s" % nombre)
+            p_, _ = plotear_planta(
+                evs, fuente, perfil=None,
+                n_asignados=conteo_por_perfil.get("(%s)" % nombre),
+                totales=conteo_total, territorio=nombre,
+                bloquear=False, mostrar_json=False,
+                con_boton_detener=False)
+            estado['percibidos'] += p_
+            _actualizar_resumen()
+
+        def _cerrar_territorios():
+            if not terr_activo['activo']:
+                return
+            terr_activo['activo'] = False
+            terr_state['panel'] = None
+            terr_state['cerrar'] = None
+            try:
+                fig_mapa.clear()
+            except Exception:
+                pass
+            try:
+                top.destroy()
+            except Exception:
+                pass
+
+        arbol_t.bind('<<TreeviewSelect>>', lambda e: _redibujar_mini())
+        arbol_t.bind('<Double-1>', lambda e: _abrir_detalle_terr())
+        top.protocol("WM_DELETE_WINDOW", _cerrar_territorios)
+
+        marco_bot = tk.Frame(top)
+        marco_bot.pack(fill='x', padx=8, pady=(0, 8))
+        tk.Button(marco_bot, text="Abrir detalle",
+                  command=_abrir_detalle_terr, padx=10, pady=6).pack(
+                      side='left', padx=4)
+        tk.Button(marco_bot, text="Cerrar", command=_cerrar_territorios,
+                  padx=10, pady=6).pack(side='left', padx=4)
+
+        terr_state['panel'] = top
+        terr_state['cerrar'] = _cerrar_territorios
+        # Enganches para pruebas.
+        top._arbol = arbol_t
+        top._fig_mapa = fig_mapa
+        top._redibujar_mini = _redibujar_mini
+        top._abrir_detalle = _abrir_detalle_terr
+        top._cerrar = _cerrar_territorios
+
+        arbol_t.selection_set(arbol_t.get_children()[0])
+        _redibujar_mini()
+
+    def _alternar_filtro():
+        if not estado['activo']:
+            return
+        estado['filtro_sospechosos'] = not estado['filtro_sospechosos']
+        btn_filtro.config(
+            text=("Todos los perfiles" if estado['filtro_sospechosos']
+                  else "Solo sospechosos"))
+        _poblar_arbol()
+        if arbol.get_children():
+            arbol.selection_set(arbol.get_children()[0])
+        _actualizar_mini()
+
+    def _ir_inicio():
+        # Restaura el estado inicial: filtro a todos, tabla repoblada y
+        # primera fila seleccionada con su mini-perfil.
+        if not estado['activo']:
+            return
+        if estado['filtro_sospechosos']:
+            _alternar_filtro()
+        else:
+            _poblar_arbol()
+        if arbol.get_children():
+            arbol.selection_set(arbol.get_children()[0])
+        _actualizar_mini()
+
+    arbol.bind('<<TreeviewSelect>>', lambda e: _actualizar_mini())
+    arbol.bind('<Double-1>', lambda e: _abrir_perfil_actual())
+
+    # --- Botones ---
+    marco_botones = tk.Frame(panel)
+    marco_botones.pack(fill='x', padx=8, pady=(2, 8))
+    estilo_btn = {'padx': 10, 'pady': 6}
+
+    def _boton(marco, texto, fn):
+        tk.Button(marco, text=texto, command=fn, **estilo_btn).pack(
+            side='left', padx=4)
+
+    var_hist = tk.BooleanVar(value=False)
+
+    def _alternar_hist():
+        if not estado['activo']:
+            return
+        estado['mostrar_hist'] = bool(var_hist.get())
+        _actualizar_mini()
+
+    _boton(marco_botones, "Abrir detalle", _abrir_perfil_actual)
+    _boton(marco_botones, "Mapas sin perfil", _abrir_territorios)
+    btn_filtro = tk.Button(marco_botones, text="Solo sospechosos",
+                           command=_alternar_filtro, **estilo_btn)
+    btn_filtro.pack(side='left', padx=4)
+    _boton(marco_botones, "Inicio", _ir_inicio)
+    chk_hist = tk.Checkbutton(marco_botones, text="Sismicidad histórica",
+                              variable=var_hist, command=_alternar_hist,
+                              **estilo_btn)
+    chk_hist.pack(side='left', padx=4)
+    _boton(marco_botones, "Salir", _salir)
+
+    _poblar_arbol()
+    if arbol.get_children():
+        arbol.selection_set(arbol.get_children()[0])
+        _actualizar_mini()
+
+    # Enganches para depuración/pruebas (sin efecto en la operación normal).
+    panel._arbol = arbol
+    panel._fig_mini = fig_mini
+    panel._etiqueta_resumen = etiqueta_resumen
+    panel._actualizar_mini = _actualizar_mini
+    panel._actualizar_resumen = _actualizar_resumen
+    panel._btn_filtro = btn_filtro
+    panel._chk_hist = chk_hist
+    panel._var_hist = var_hist
+    panel._abrir_perfil_actual = _abrir_perfil_actual
+    panel._abrir_territorios = _abrir_territorios
+    panel._alternar_filtro = _alternar_filtro
+    panel._alternar_hist = _alternar_hist
+    panel._ir_inicio = _ir_inicio
+    panel._poblar_arbol = _poblar_arbol
+    panel._salir = _salir
+    return True
+
+
+def _despliegue_secuencial(grupos, perfiles_por_id, sin_perfil, fuente,
+                           conteo_por_perfil, conteo_total, bloquear=True):
+    """
+    Fallback para cuando no hay backend interactivo (headless): un perfil por
+    ventana y luego los mapas de territorio de los eventos sin perfil.
+    En modo interactivo el análisis se hace desde el panel, así que solo se
+    llega aquí si el panel no pudo abrirse.
+    Devuelve (percibidos, total_por_perfil).
+    """
+    global _detener_despliegue
+    _detener_despliegue = False
+
+    percibidos = 0
+    total_por_perfil = {}
+
+    for pid in sorted(grupos):
+        if despliegue_detenido():
+            break
+        perfil = perfiles_por_id[pid]
+        _registrar_progreso("Perfil %s de %d"
+                            % (pid, len(grupos)))
+        p, n = plotear_ventana(grupos[pid], perfil, fuente, percibidos,
+                               n_asignados=conteo_por_perfil.get(pid),
+                               totales=conteo_total, bloquear=bloquear)
+        percibidos += p
+        total_por_perfil[pid] = n
+
+    if sin_perfil and not despliegue_detenido():
+        _registrar_progreso("Eventos sin perfil")
+        nacional, insular, antartico = _categorizar_por_territorio(sin_perfil)
+
+        for nombre, eventos_territorio in [
+            ("Nacional", nacional),
+            ("Insular", insular),
+            ("Antártico", antartico)
+        ]:
+            if despliegue_detenido():
+                break
+            if eventos_territorio:
+                p, n = plotear_planta(
+                    eventos_territorio, fuente, perfil=None,
+                    n_asignados=conteo_por_perfil.get("(%s)" % nombre),
+                    totales=conteo_total, territorio=nombre,
+                    bloquear=bloquear
+                )
+                percibidos += p
+                total_por_perfil[nombre] = n
+
+    if despliegue_detenido():
+        print("Despliegue detenido por el usuario.")
+
+    return percibidos, total_por_perfil
+
+
+def _escribir_log_sesion(fuente, total_eventos, n_sospechosos,
+                         total_percibidos=None, vistos=None):
+    """
+    Guarda el resumen de la sesión en dos archivos del directorio de trabajo:
+      - resumen_historico.log: acumulativo. Si no existe se crea con
+        encabezado (puede haberse borrado); luego se añade una línea por
+        ejecución.
+      - resumen_sesion.log: solo la sesión actual (se pisa en cada ejecución).
+    Devuelve la línea escrita.
+    """
+    import datetime
+    ahora = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    t_perc = total_percibidos if total_percibidos is not None else "-"
+    v = vistos if vistos is not None else "-"
+    linea = ("%s | %s | %d | %d | %s | %s"
+             % (ahora, fuente, total_eventos, n_sospechosos, t_perc, v))
+    encabezado = ("fecha hora | fuente | eventos | sospechosos | "
+                  "percibidos catalogo | percibidos vistos")
+    ruta_hist = rutas.p_ploteo("resumen_historico.log")
+    ruta_sesion = rutas.p_ploteo("resumen_sesion.log")
+    if not os.path.isfile(ruta_hist):
+        with open(ruta_hist, "w") as f:
+            f.write(encabezado + "\n")
+    with open(ruta_hist, "a") as f:
+        f.write(linea + "\n")
+    with open(ruta_sesion, "w") as f:
+        f.write(encabezado + "\n")
+        f.write(linea + "\n")
+    return linea
 
 
 def main():
@@ -1559,14 +2385,15 @@ def main():
     # abre percibidos.txt SIEMPRE en modo "w" para evitar acumular datos
     # de ejecuciones anteriores (solo relevante para eventquery)
     if fuente == "eventquery":
-        with open("percibidos.txt", "w") as f:
+        _percibidos_escritos.clear()
+        with open(rutas.p_ploteo("percibidos.txt"), "w") as f:
             f.write("id fecha hora latitud longitud prof magnitud tipomag percibido\n")
 
     # Carga el conteo por perfil que generajson.py dejó en
-    # conteo_perfiles_<fuente>.json para mostrarlo a medida que se plotea.
+    # datos/conteo_perfiles_<fuente>.json para mostrarlo a medida que se plotea.
     conteo_por_perfil = {}
     conteo_total = None
-    conteo_archivo = 'conteo_perfiles_%s.json' % fuente
+    conteo_archivo = rutas.p_datos('conteo_perfiles_%s.json' % fuente)
     if os.path.isfile(conteo_archivo):
         try:
             with open(conteo_archivo) as f:
@@ -1598,49 +2425,39 @@ def main():
         else:
             sin_perfil.append(evento)
 
-    percibidos = 0
-    total_por_perfil = {}
+    n_eventos = len(eventos)
+    n_sospechosos = sum(1 for ev in eventos if ev.get('sospechoso'))
+    # Total de percibidos del catálogo extraído (denominador del resumen
+    # "vistos de totales").
+    total_percibidos = sum(
+        1 for ev in eventos if ev.get('percibido') == "S")
 
-    for pid in sorted(grupos):
-        if despliegue_detenido():
-            break
-        perfil = perfiles_por_id[pid]
-        _registrar_progreso("Perfil %s de %d"
-                            % (pid, len(grupos)))
-        p, n = plotear_ventana(grupos[pid], perfil, fuente, percibidos,
-                               n_asignados=conteo_por_perfil.get(pid),
-                               totales=conteo_total)
-        percibidos += p
-        total_por_perfil[pid] = n
+    # Nueva interacción: panel de análisis con vista general y detalle a
+    # demanda. Si no hay backend interactivo (o falla) se cae al flujo
+    # secuencial histórico.
+    if _panel_analisis(grupos, perfiles_por_id, sin_perfil, fuente,
+                       conteo_por_perfil, conteo_total, n_eventos,
+                       n_sospechosos, total_percibidos):
+        # Mantiene viva la raíz Tk: procesa eventos del panel y de las
+        # figuras de detalle hasta que el usuario cierra la sesión. Se usa
+        # el mainloop de la raíz (y no plt.show()) para que el ancla oculta
+        # nunca vuelva a mapearse como cuadro vacío.
+        raiz = _raiz_tk()
+        if raiz is not None:
+            raiz.mainloop()
+    else:
+        _despliegue_secuencial(grupos, perfiles_por_id, sin_perfil, fuente,
+                               conteo_por_perfil, conteo_total,
+                               bloquear=True)
 
-    if sin_perfil and not despliegue_detenido():
-        _registrar_progreso("Eventos sin perfil")
-        nacional, insular, antartico = _categorizar_por_territorio(sin_perfil)
-        
-        for nombre, eventos_territorio in [
-            ("Nacional", nacional),
-            ("Insular", insular),
-            ("Antártico", antartico)
-        ]:
-            if despliegue_detenido():
-                break
-            if eventos_territorio:
-                p, n = plotear_planta(
-                    eventos_territorio, fuente, perfil=None,
-                    n_asignados=conteo_por_perfil.get(f"({nombre})"),
-                    totales=conteo_total, territorio=nombre
-                )
-                percibidos += p
-                total_por_perfil[nombre] = n
-
-    if despliegue_detenido():
-        print("Despliegue detenido por el usuario.")
-
-    print("Eventos ploteados:")
-    for pid, n in sorted(total_por_perfil.items()):
-        print("  %s : %d" % (pid, n))
     if fuente == "eventquery":
-        print("Percibidos:", percibidos)
+        vistos = len(_percibidos_escritos)
+        _escribir_log_sesion(fuente, n_eventos, n_sospechosos,
+                             total_percibidos, vistos)
+        print("De %d percibidos en el catalogo, %d eventos percibidos "
+              "vistos en esta sesion." % (total_percibidos, vistos))
+    else:
+        _escribir_log_sesion(fuente, n_eventos, n_sospechosos)
 
 
 if __name__ == "__main__":

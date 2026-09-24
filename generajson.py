@@ -36,6 +36,7 @@ import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import asigna_perfiles as ap
 import sismicidad
+import rutas
 
 
 def parsear_extra_args(args):
@@ -128,12 +129,12 @@ def procesar_csv(archivo_csv, fuente, umbral=None, k_peso=None,
         ev.pop('lon', None)
         ev.pop('lat', None)
 
-    salida_json = 'eventos_%s.json' % fuente
+    salida_json = rutas.p_datos('eventos_%s.json' % fuente)
     with open(salida_json, 'w') as jsonfile:
         json.dump(eventos, jsonfile, indent=4)
 
     # Lista de eventos que podrían estar mal localizados (sospechosos)
-    sospechosos_csv = 'sospechosos_%s.csv' % fuente
+    sospechosos_csv = rutas.p_datos('sospechosos_%s.csv' % fuente)
     with open(sospechosos_csv, 'w', newline='') as csvfile:
         escritor = csv.writer(csvfile)
         escritor.writerow(['id', 'fecha hora', 'latitud', 'longitud', 'prof',
@@ -165,9 +166,9 @@ def procesar_csv(archivo_csv, fuente, umbral=None, k_peso=None,
                                    ev.get('archivo_origen'),
                                    ev.get('n_fila_origen')])
                 # Diagnóstico en consola: por qué se marcó cada sospechoso
-                print("  [sospechoso] %s"
-                      % sismicidad.explicar_sospechoso(ev))
-
+                #print("  [sospechoso] %s"
+                #      % sismicidad.explicar_sospechoso(ev))
+ 
     total_eventos = len(eventos)
     with_perfil = sum(1 for ev in eventos if ev.get('perfil') is not None)
     sin_perfil = total_eventos - with_perfil
@@ -186,15 +187,15 @@ def procesar_csv(archivo_csv, fuente, umbral=None, k_peso=None,
               % (n_sospechosos, sospechosos_csv))
     if sin_perfil:
         print('Eventos sin perfil (se plotearán solo en planta):', sin_perfil)
-    print('Distribución por perfil:')
+    #print('Distribución por perfil:')
     conteo_labels = {}
     for per in sorted(conteo, key=lambda x: (x is None, '' if x is None else x)):
         label = per if per is not None else '(sin perfil)'
         conteo_labels[label] = conteo[per]
-        print('  %-12s %d' % (label, conteo[per]))
+        #print('  %-12s %d' % (label, conteo[per]))
 
     # Guarda el conteo para que plotear.py lo muestre a medida que plotea
-    conteo_json = 'conteo_perfiles_%s.json' % fuente
+    conteo_json = rutas.p_datos('conteo_perfiles_%s.json' % fuente)
     with open(conteo_json, 'w') as f:
         json.dump({'total': total_eventos,
                    'con_perfil': with_perfil,

@@ -6,6 +6,8 @@ import shutil
 import datetime
 from datetime import timedelta
 
+import rutas
+
 # cabeceras para cada archivo .txt de salida (Para plotear con google earth)
 cabecera_publica="fecha hora latitud longitud prof mag tipomag referencia percibido\n"
 cabecera_seisan="fecha hora latitud longitud prof mag tipomag analista\n"
@@ -24,7 +26,7 @@ def detecta_repetidos(lista_sismos, max_seg, max_lat, max_lon, nombre_archivo, c
     # revisa cada sismo contra toda la lista y cuenta las coincidencias dentro de la ventana de tiempo y coordenadas
     total_repetidos=0
     avance=0
-    archivo=open(nombre_archivo, "w")
+    archivo=open(rutas.p_informes(nombre_archivo), "w")
     archivo.write(cabecera)
     for sismo in lista_sismos:
         repeticiones=0

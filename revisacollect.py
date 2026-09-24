@@ -10,6 +10,8 @@ import pandas as pandasForSortingCSV
 from thefuzz import process, fuzz
 import Levenshtein
 
+import rutas
+
 sismos={}
 lista=[]
 newlista=[]
@@ -18,8 +20,8 @@ sismolista=[]
 linealista=''
 
 # genera txt agregando un cero a dias menores a 10 y separa el dia del mes
-archivo=open("newcollect.txt")
-archivo1=open("newcollect_1.txt", "w")
+archivo=open(rutas.p_trabajo("newcollect.txt"))
+archivo1=open(rutas.p_trabajo("newcollect_1.txt"), "w")
 for linea in archivo:
 	sismo=linea.split()
 	largolista=len(sismo)
@@ -49,10 +51,10 @@ for linea in archivo:
 	linealista=''
 
 # Archvos .txt de entrada y salida
-archivo1=open("newcollect_1.txt")
-archivo2=open('newcollect_2.txt', "w")
-archivo4=open('constation0.txt', "w")
-archivo5=open('sinestructura.txt', "w")
+archivo1=open(rutas.p_trabajo("newcollect_1.txt"))
+archivo2=open(rutas.p_trabajo('newcollect_2.txt'), "w")
+archivo4=open(rutas.p_informes('constation0.txt'), "w")
+archivo5=open(rutas.p_informes('sinestructura.txt'), "w")
 
 sinestruc=0
 concero=0
@@ -85,8 +87,8 @@ for linea in archivo1:
 	linealista=''
 
 # Separa la longitud de la profundidad en los casos que esta sea mayor a 99 km (que tenga 3 o mas digitos)
-archivo2=open("newcollect_2.txt")
-archivo3=open("newcollect_final.txt", "w")
+archivo2=open(rutas.p_trabajo("newcollect_2.txt"))
+archivo3=open(rutas.p_trabajo("newcollect_final.txt"), "w")
 for linea2 in archivo2:
 	sismo=linea2.split()
 	largolista=len(sismo)
@@ -107,11 +109,11 @@ for linea2 in archivo2:
 		linealista=''
 
 # Borra archivos txt temporales		
-remove("newcollect_1.txt")
-remove("newcollect_2.txt")
+remove(rutas.p_trabajo("newcollect_1.txt"))
+remove(rutas.p_trabajo("newcollect_2.txt"))
 
 # crea archivo salida salida_collect.csv
-archivo3=open("newcollect_final.txt")
+archivo3=open(rutas.p_trabajo("newcollect_final.txt"))
 listacsv=[]
 numeventofinal=0
 for linea in archivo3:
@@ -142,7 +144,7 @@ for linea in archivo3:
 
 df = pd.DataFrame(listacsv)
 df.columns=['Fecha_Hora', 'Latitud', 'Longitud', 'Prof.', 'Mag.', 'Tipo_mag.', 'Analista']
-salida='salida_collect_tmp.csv'
+salida=rutas.p_trabajo('salida_collect_tmp.csv')
 df.to_csv(salida)
 
 # Asigna datos del csv de origen
@@ -157,11 +159,11 @@ salida.sort_values(["Fecha_Hora"],
                     inplace=True)
   
 # Crea archivo .csv ordenado
-salida_csv = 'salida_collect_sort.csv'
+salida_csv = rutas.p_trabajo('salida_collect_sort.csv')
 salida.to_csv(salida_csv)
 
 # borra .csv temporal
-remove('salida_collect_tmp.csv')
+remove(rutas.p_trabajo('salida_collect_tmp.csv'))
 
 csvData = open(salida_csv, encoding='utf-8')
 csvreader = csv.reader(csvData)
@@ -193,13 +195,13 @@ for linea in csvreader:
 # crea .csv final de salida
 df_final = pd.DataFrame(listacsv)
 df_final.columns=['Fecha_Hora', 'Latitud', 'Longitud', 'Prof.', 'Mag.', 'Tipo_mag.', 'Analista']
-salida='salida_collect.csv'
+salida=rutas.p_datos('salida_collect.csv')
 df_final.to_csv(salida)
 
 # borra .csv temporal
-remove('salida_collect_sort.csv')
-remove('newcollect.txt')
-os.rename('newcollect_final.txt', 'newcollect.txt')
+remove(rutas.p_trabajo('salida_collect_sort.csv'))
+remove(rutas.p_trabajo('newcollect.txt'))
+os.rename(rutas.p_trabajo('newcollect_final.txt'), rutas.p_trabajo('newcollect.txt'))
 
 # Carga dataframe df_final para crear .csv por analista en una nueva carpeta llamada analistas
 # configura que si hay 1 letra de diferencia (o menos), se unen
@@ -238,7 +240,7 @@ for i, nombre in enumerate(nombres_unicos):
 df_final['Analista_Final'] = df_final['Analista_Clean'].map(mapeo_unificado)
 
 # Guarda archivos .csv por analistas en carpeta analistas
-carpeta_destino = 'eventos'
+carpeta_destino = rutas.DIR_ANALISTAS
 if not os.path.exists(carpeta_destino):
     os.makedirs(carpeta_destino)
 	

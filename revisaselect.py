@@ -3,13 +3,15 @@ import time
 import sys, os
 from os import remove
 
+import rutas
+
 sismos={}
 numeventos_update=0
 numeventos_exclu=0
 archivo=open("select.out", 'r', encoding='latin-1')
-newcollect=open("newcollect.txt", "w")
-excluidostmp1=open("excluidostmp1.txt", "w")
-cabeceras=open("cabeceras.txt", "w")
+newcollect=open(rutas.p_trabajo("newcollect.txt"), "w")
+excluidostmp1=open(rutas.p_trabajo("excluidostmp1.txt"), "w")
+cabeceras=open(rutas.p_informes("cabeceras.txt"), "w")
 lineacollect=''
 lineacollect_aux=''
 tienerms=''
@@ -252,8 +254,8 @@ for linea in archivo:
     else:
         lineacollect=''
 
-excluidostmp1=open("excluidostmp1.txt")
-excluidos=open("excluidos.txt", "w")
+excluidostmp1=open(rutas.p_trabajo("excluidostmp1.txt"))
+excluidos=open(rutas.p_informes("excluidos.txt"), "w")
 
 for lineatxt in excluidostmp1:
     linea=''

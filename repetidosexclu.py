@@ -6,8 +6,10 @@ import shutil
 import datetime
 from datetime import timedelta
 
+import rutas
+
 # archivos de salida
-archivo2=open("rep_seisan_exclu.txt", "w")
+archivo2=open(rutas.p_informes("rep_seisan_exclu.txt"), "w")
 
 # cabeceras para cada archivo .txt de salida (Para plotear con google earth)
 archivo2.write("fecha hora analista\n")
