@@ -20,7 +20,11 @@ Para cada evento y cada perfil se calcula:
     dist_asoc²    = dist_horiz_km² + (K_PESO_PROFUNDIDAD * residuo_km)²
 
 El evento se asigna al perfil de menor dist_asoc si dist_asoc <= UMBRAL.
-Si todos los perfiles superan el umbral, el evento queda SIN PERFIL (None).
+Si todos los perfiles superan el umbral pero alguno queda a <= UMBRAL_PERP_KM
+de distancia perpendicular (perpendicular), el evento se asocia igualmente a
+ese perfil (respaldo por cercanía horizontal; la profundidad se evalúa luego
+en las reglas de "sospechoso"). Solo si también supera UMBRAL_PERP_KM el
+evento queda SIN PERFIL (None).
 """
 
 import os
@@ -49,6 +53,15 @@ GRILLAS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 # el evento queda SIN PERFIL (campo "perfil": None) y solo se plotea sobre
 # la planta. Default 110 km (criterio similar a mapasOPA/perfiles.py).
 UMBRAL_DIST_KM = 110.0
+
+# UMBRAL_PERP_KM: umbral de respaldo por distancia PERPENDICULAR (km). Si el
+# evento no cumple el umbral combinado (dist_asoc) con ningún perfil, se
+# asocia al perfil horizontalmente más cercano si su distancia perpendicular
+# es <= este valor. Así un evento claramente "sobre" un perfil se asocia
+# aunque su profundidad difiera mucho del slab; la profundidad se evalúa
+# luego en las reglas de "sospechoso" (residuo_max_km). Default 55 km
+# (≈ medio espaciado de ~1° entre perfiles).
+UMBRAL_PERP_KM = 55.0
 
 # K_PESO_PROFUNDIDAD: peso de la profundidad frente a la distancia horizontal
 # en la métrica  dist_asoc² = dist_horiz² + (K * residuo_slab)².
@@ -268,7 +281,8 @@ def profundidad_slab_en(perfil, along_km):
 def asignar_perfil_evento(lon, lat, prof,
                           perfiles,
                           umbral=UMBRAL_DIST_KM,
-                          k_peso=K_PESO_PROFUNDIDAD):
+                          k_peso=K_PESO_PROFUNDIDAD,
+                          umbral_perp=UMBRAL_PERP_KM):
     """
     Asigna un evento (lon, lat, prof) al perfil más cercano según la métrica
     combinada. Devuelve un diccionario con:
@@ -279,11 +293,17 @@ def asignar_perfil_evento(lon, lat, prof,
         residuo_km  : |prof - slab(along)| en km (None si slab sin cobertura)
         dist_asoc   : índice de asociación (km)
 
+    Si ningún perfil cumple el umbral combinado (dist_asoc <= umbral) pero
+    el perfil horizontalmente más cercano está a <= umbral_perp km, el evento
+    se asocia a ese perfil de todos modos (respaldo por cercanía horizontal;
+    su profundidad se evalúa luego en las reglas de "sospechoso").
+
     La determinación de "sospechoso" (posible mal localizado) no se hace aquí;
     vive en sismicidad.es_sospechoso(), que recibe estos parámetros y aplica
     los criterios configurables (slab + sismicidad histórica).
     """
     mejor = None  # (dist_asoc, perfil_id, along, perp, residuo)
+    mejor_perp = None  # (perp, perfil_id, along, residuo, dist_asoc) mínima perp
 
     for per in perfiles:
         perp, along = distancia_al_perfil(lon, lat, per)
@@ -302,28 +322,42 @@ def asignar_perfil_evento(lon, lat, prof,
 
         if mejor is None or dist_asoc < mejor[0]:
             mejor = (dist_asoc, per["id"], along, perp, residuo)
+        if mejor_perp is None or perp < mejor_perp[0]:
+            mejor_perp = (perp, per["id"], along, residuo, dist_asoc)
 
     if mejor is None:
         return {"perfil": None, "along_km": None, "perp_km": None,
                 "residuo_km": None, "dist_asoc": None}
 
     dist_asoc, perfil_id, along, perp, residuo = mejor
-    if dist_asoc > umbral:
-        # Excede el umbral de asociación: queda sin perfil.
-        return {"perfil": None, "along_km": None, "perp_km": None,
-                "residuo_km": None, "dist_asoc": round(dist_asoc, 3)}
+    if dist_asoc <= umbral:
+        return {
+            "perfil": perfil_id,
+            "along_km": round(float(along), 3),
+            "perp_km": round(float(perp), 3),
+            "residuo_km": round(residuo, 3) if residuo is not None else None,
+            "dist_asoc": round(dist_asoc, 3),
+        }
 
-    return {
-        "perfil": perfil_id,
-        "along_km": round(float(along), 3),
-        "perp_km": round(float(perp), 3),
-        "residuo_km": round(residuo, 3) if residuo is not None else None,
-        "dist_asoc": round(dist_asoc, 3),
-    }
+    # Respaldo por cercanía horizontal: si el perfil más cercano en
+    # perpendicular está dentro de umbral_perp, se asocia igualmente.
+    if mejor_perp is not None and mejor_perp[0] <= umbral_perp:
+        perp_p, perfil_id_p, along_p, residuo_p, dist_asoc_p = mejor_perp
+        return {
+            "perfil": perfil_id_p,
+            "along_km": round(float(along_p), 3),
+            "perp_km": round(float(perp_p), 3),
+            "residuo_km": round(residuo_p, 3) if residuo_p is not None else None,
+            "dist_asoc": round(dist_asoc_p, 3),
+        }
+
+    # Excede ambos umbrales: queda sin perfil.
+    return {"perfil": None, "along_km": None, "perp_km": None,
+            "residuo_km": None, "dist_asoc": round(dist_asoc, 3)}
 
 
 def asignar_eventos(eventos, umbral=UMBRAL_DIST_KM, k_peso=K_PESO_PROFUNDIDAD,
-                    grillas_dir=GRILLAS_DIR):
+                    umbral_perp=UMBRAL_PERP_KM, grillas_dir=GRILLAS_DIR):
     """
     Asigna una lista de eventos (dicts con 'lon', 'lat', 'prof') a sus perfiles.
     Adorna cada dict con los campos: perfil, along_km, perp_km, residuo_km,
@@ -352,7 +386,8 @@ def asignar_eventos(eventos, umbral=UMBRAL_DIST_KM, k_peso=K_PESO_PROFUNDIDAD,
             continue
 
         resultado = asignar_perfil_evento(lon, lat, prof, perfiles,
-                                          umbral=umbral, k_peso=k_peso)
+                                          umbral=umbral, k_peso=k_peso,
+                                          umbral_perp=umbral_perp)
         ev.update(resultado)
 
     return eventos

@@ -8,7 +8,7 @@ archivo JSON por fuente con todos los eventos, cada uno adornado con su
 perfil y las coordenadas calculadas para el ploteo.
 
 Uso:
-    python3 generajson.py <archivo_csv> <fuente> [--umbral=KM] [--k=K]
+    python3 generajson.py <archivo_csv> <fuente> [--umbral=KM] [--k=K] [--umbral-perp=KM]
 
     archivo_csv : archivo .csv con los eventos (p. ej. salida_collect.csv o
                   new_2_*.csv)
@@ -17,6 +17,10 @@ Uso:
                   UMBRAL_DIST_KM de asigna_perfiles.py)
     --k=K       : peso de la profundidad en la métrica (default
                   K_PESO_PROFUNDIDAD de asigna_perfiles.py)
+    --umbral-perp=KM : umbral de respaldo por distancia perpendicular (km)
+                  para asociar eventos cercanos al perfil aunque su
+                  profundidad difiera del slab (default UMBRAL_PERP_KM de
+                  asigna_perfiles.py)
 
 Salida:
     eventos_<fuente>.json    (lista de eventos con sus campos originales más
@@ -35,18 +39,22 @@ import sismicidad
 
 
 def parsear_extra_args(args):
-    """Extrae --umbral=KM y --k=K de los argumentos adicionales."""
+    """Extrae --umbral=KM, --k=K y --umbral-perp=KM de los argumentos."""
     umbral = None
     k_peso = None
+    umbral_perp = None
     for arg in args:
         if arg.startswith("--umbral="):
             umbral = float(arg.split("=", 1)[1])
         elif arg.startswith("--k="):
             k_peso = float(arg.split("=", 1)[1])
-    return umbral, k_peso
+        elif arg.startswith("--umbral-perp="):
+            umbral_perp = float(arg.split("=", 1)[1])
+    return umbral, k_peso, umbral_perp
 
 
-def procesar_csv(archivo_csv, fuente, umbral=None, k_peso=None):
+def procesar_csv(archivo_csv, fuente, umbral=None, k_peso=None,
+                 umbral_perp=None):
     """
     Procesa el .csv, asigna perfiles y escribe eventos_<fuente>.json.
     Devuelve (total_eventos, con_perfil, sin_perfil).
@@ -55,6 +63,8 @@ def procesar_csv(archivo_csv, fuente, umbral=None, k_peso=None):
         umbral = ap.UMBRAL_DIST_KM
     if k_peso is None:
         k_peso = ap.K_PESO_PROFUNDIDAD
+    if umbral_perp is None:
+        umbral_perp = ap.UMBRAL_PERP_KM
 
     eventos = []
     archivo_origen = os.path.basename(archivo_csv)
@@ -104,7 +114,8 @@ def procesar_csv(archivo_csv, fuente, umbral=None, k_peso=None):
             eventos.append(evento)
 
     # Asigna perfil a cada evento (incluye la profundidad en la métrica)
-    eventos = ap.asignar_eventos(eventos, umbral=umbral, k_peso=k_peso)
+    eventos = ap.asignar_eventos(eventos, umbral=umbral, k_peso=k_peso,
+                                 umbral_perp=umbral_perp)
 
     # Decide si cada evento ploteado podría estar mal localizado (sospechoso)
     # usando el slab y la sismicidad histórica local. La sismicidad histórica
@@ -200,11 +211,12 @@ if __name__ == "__main__":
 
     archivo_csv = sys.argv[1]
     fuente = sys.argv[2]
-    umbral_usr, k_usr = parsear_extra_args(sys.argv[3:])
+    umbral_usr, k_usr, umbral_perp_usr = parsear_extra_args(sys.argv[3:])
 
     if not os.path.isfile(archivo_csv):
         print("Error: no se encontró el archivo '%s'." % archivo_csv)
         sys.exit(1)
 
-    procesar_csv(archivo_csv, fuente, umbral=umbral_usr, k_peso=k_usr)
+    procesar_csv(archivo_csv, fuente, umbral=umbral_usr, k_peso=k_usr,
+                 umbral_perp=umbral_perp_usr)
     print('Archivo JSON generado:', 'eventos_%s.json' % fuente)
