@@ -25,6 +25,7 @@ import sys
 import json
 import math
 import csv
+import textwrap
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -32,6 +33,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
+import cartopy.io.shapereader as shpreader
 from PIL import Image
 from adjustText import adjust_text
 
@@ -47,6 +49,17 @@ Image.MAX_IMAGE_PIXELS = None  # desactiva el límite de seguridad de PIL
 # FIG_SIZE: tamaño (pulgadas) de la figura que se abre por perfil.
 # La planta ocupa el subplot izquierdo y el perfil el derecho.
 FIG_SIZE = (15, 7)
+
+# FIG_SIZE_NACIONAL: tamaño (pulgadas) de la figura del mapa del Territorio
+# Nacional (Chile completo, largo y angosto). Se usa una figura vertical para
+# agrandar el mapa sin deformar su geografía (aspecto PlateCarree ~0.31).
+# Configurable: subir la altura agranda el mapa (limitado por la pantalla).
+FIG_SIZE_NACIONAL = (7.0, 13.0)
+
+# ANCHO_TEXTO_NACIONAL: caracteres máximos por línea del texto que va a la
+# izquierda del mapa Nacional (título + subtítulo). Se usa con textwrap.fill
+# para que el texto no se monte sobre el mapa. Configurable.
+ANCHO_TEXTO_NACIONAL = 30
 
 # DPI: resolución de la figura. A mayor DPI, mapas más nítidos (y algo más
 # lentos al dibujar). Default 100 (buen equilibrio pantalla).
@@ -74,6 +87,20 @@ RESOLUCION_RELIEVE_PLANTA = 500
 # NIVEL COASTLINE/BORDES como en capturar.py:
 # NIVEL_GEO = "50m" coastlines y bordes de países.
 NIVEL_GEO = "50m"
+
+# COLOR_FRONTERA / GROSOR_FRONTERA / ESTILO_FRONTERA: estilo de las fronteras
+# internacionales (Chile-Argentina/Perú/Bolivia) en la planta. Línea sólida,
+# oscura y moderada para que se note sin recargar el mapa. Configurable.
+COLOR_FRONTERA = '#000000'
+GROSOR_FRONTERA = 1.2
+ESTILO_FRONTERA = '-'
+
+# COLOR_REGION / GROSOR_REGION / ESTILO_REGION: estilo de los límites internos
+# de las regiones de Chile en la planta. Más tenues que las fronteras pero
+# visibles, en línea segmentada. Configurable.
+COLOR_REGION = '#202020'
+GROSOR_REGION = 1.0
+ESTILO_REGION = '--'
 
 # COLOR_PERCIBIDO: color de relleno de los eventos percibidos (fuente
 # eventquery, campo percibido="S"). Puede ser nombre o código hexadecimal.
@@ -449,6 +476,44 @@ def _sismicidad_perfil(ax_perfil, perfil):
                           rasterized=True)
 
 
+_cache_regiones = None
+
+
+def _cargar_regiones_chile():
+    """
+    Límites internos de las regiones de Chile (Natural Earth 10m
+    'admin_1_states_provinces_lines'). Se leen con pyshp porque el lector de
+    cartopy falla por un registro con geometría nula. Devuelve una lista de
+    shapely geometries, cacheada en memoria. Si no se puede cargar, devuelve
+    [] (el mapa queda sin regiones, no rompe).
+    """
+    global _cache_regiones
+    if _cache_regiones is not None:
+        return _cache_regiones
+    try:
+        import shapefile
+        from shapely.geometry import shape
+        ruta = shpreader.natural_earth(
+            resolution='10m', category='cultural',
+            name='admin_1_states_provinces_lines')
+        r = shapefile.Reader(ruta)
+        i_adm = [f[0] for f in r.fields[1:]].index('ADM0_A3')
+        geoms = []
+        for sr in r.iterShapeRecords():
+            if sr.record[i_adm] != 'CHL':
+                continue
+            if sr.shape.shapeType == 0 or len(sr.shape.points) == 0:
+                continue
+            g = shape(sr.shape.__geo_interface__)
+            if not g.is_empty:
+                geoms.append(g)
+        _cache_regiones = geoms
+    except Exception as e:
+        print("[Aviso] No se pudieron cargar las regiones: %s" % e)
+        _cache_regiones = []
+    return _cache_regiones
+
+
 def _base_mapa_planta(ax, lon_min, lon_max, lat_min, lat_max):
     """
     Dibuja el fondo de la planta en el axes cartopy: relieve, costas, bordes
@@ -472,7 +537,14 @@ def _base_mapa_planta(ax, lon_min, lon_max, lat_min, lat_max):
     ax.add_feature(cfeature.COASTLINE.with_scale(NIVEL_GEO),
                    edgecolor='#111111', linewidth=1.1, zorder=2)
     ax.add_feature(cfeature.BORDERS.with_scale(NIVEL_GEO),
-                   edgecolor='#333333', linestyle=':', linewidth=0.8, zorder=2)
+                   edgecolor=COLOR_FRONTERA, linestyle=ESTILO_FRONTERA,
+                   linewidth=GROSOR_FRONTERA, zorder=2)
+
+    regiones = _cargar_regiones_chile()
+    if regiones:
+        ax.add_geometries(regiones, crs=ccrs.PlateCarree(),
+                          edgecolor=COLOR_REGION, linestyle=ESTILO_REGION,
+                          linewidth=GROSOR_REGION, facecolor='none', zorder=2)
 
     gl = ax.gridlines(draw_labels=True, linestyle='--', alpha=0.5,
                       color='#444444', zorder=4)
@@ -544,7 +616,7 @@ def _localidades_planta(ax, lon_min, lon_max, lat_min, lat_max, territorio=None)
     """Marca las localidades que caen dentro del área visible de la planta."""
     if not os.path.isfile(ARCHIVO_LOCALIDADES):
         return
-    if territorio == "Nacional":
+    if territorio is not None:
         return
     try:
         with open(ARCHIVO_LOCALIDADES, mode='r', encoding='utf-8') as f:
@@ -1112,6 +1184,55 @@ def _indicador_modo_interaccion(fig):
     _refrescar()
 
 
+def _layout_nacional(fig, ax, ax_txt, lon_min, lon_max, lat_min, lat_max,
+                     titulo, subtitulo):
+    """
+    Recalcula la disposición del mapa del Territorio Nacional según el tamaño
+    actual de la figura: el mapa queda a la derecha respetando su aspecto
+    geográfico (sin deformar) y el título a la izquierda, envolviéndolo al
+    ancho de la columna. Se invoca al crear y en cada redimensionamiento.
+    """
+    W, H = fig.get_size_inches()
+    if W <= 0 or H <= 0:
+        return
+    # Aspecto geográfico del mapa (grados).
+    aspecto = (lon_max - lon_min) / max(1e-9, lat_max - lat_min)
+    # Márgenes en fracción de la figura.
+    top_frac = 0.03
+    bot_frac = 0.10
+    der_in = 0.12
+    izq_in = 0.02
+    # Espacio vertical disponible para el mapa.
+    alto_disponible = H * (1.0 - top_frac - bot_frac)
+    # Ancho mínimo (pulgadas) para la columna de texto a la izquierda.
+    texto_min_in = 2.2
+    ancho_disponible = W - der_in
+    alto_mapa = alto_disponible
+    ancho_mapa = alto_mapa * aspecto
+    if ancho_mapa > ancho_disponible - texto_min_in:
+        ancho_mapa = ancho_disponible - texto_min_in
+        alto_mapa = ancho_mapa / aspecto
+    # Posición del mapa (derecha).
+    x0_mapa = (W - der_in - ancho_mapa) / W
+    y0_mapa = bot_frac
+    ax.set_position([x0_mapa, y0_mapa, ancho_mapa / W, alto_mapa / H])
+    # Columna de texto a la izquierda del mapa.
+    x0_texto = izq_in / W
+    ancho_columna = (x0_mapa - izq_in / W)
+    ax_txt.set_position([x0_texto, bot_frac, max(0.03, ancho_columna),
+                         1.0 - top_frac - bot_frac])
+    ax_txt.cla()
+    ax_txt.axis('off')
+    # Envolver el texto al ancho de la columna (estimación por caracteres).
+    fs = 11
+    ancho_pulg = max(1.0, ancho_columna * W)
+    chars = max(10, int(ancho_pulg / (0.6 * fs / 72.0)))
+    partes = [p for p in (titulo, subtitulo) if p]
+    texto_izq = "\n".join(textwrap.fill(p, width=chars) for p in partes)
+    ax_txt.text(0.0, 0.5, texto_izq, ha='left', va='center',
+                fontsize=fs, fontweight='bold')
+
+
 def plotear_planta(eventos, fuente, perfil=None, n_asignados=None, totales=None,
                    territorio=None):
     """
@@ -1150,44 +1271,89 @@ def plotear_planta(eventos, fuente, perfil=None, n_asignados=None, totales=None,
         titulo = "Vista en Planta - Perfil %s" % perfil["id"]
         nombre_popup = "Perfil %s" % perfil["id"]
     elif territorio is not None:
-        titulo = "Vista en Planta - Eventos sin perfil - Territorio %s" % territorio
         nombre_popup = "Territorio %s" % territorio
+        # Título compacto para los mapas de territorio (sin suptitle ni
+        # redundancias). La extensión geográfica la muestran las grillas.
+        plural_ev = "evento" if total_eventos == 1 else "eventos"
+        plural_sosp = "sospechoso" if sospechosos == 1 else "sospechosos"
+        titulo = ("Territorio %s — %d %s · %d %s"
+                  % (territorio, total_eventos, plural_ev,
+                     sospechosos, plural_sosp))
+        if fuente == "eventquery" and percibidos:
+            titulo += " · %d percibidos" % percibidos
     else:
         titulo = "Vista en Planta - Eventos sin perfil asignado"
         nombre_popup = "Eventos sin perfil"
-    if _progreso:
-        titulo = "%s - %s" % (titulo, _progreso)
     subtitulo = _texto_extencion(lon_min, lon_max, lat_min, lat_max)
 
-    fig = plt.figure(figsize=FIG_SIZE, dpi=DPI)
-    ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
+    layout_nacional = (territorio == "Nacional")
+    if layout_nacional:
+        fig = plt.figure(figsize=FIG_SIZE_NACIONAL, dpi=DPI)
+        # Abre a lo máximo en vertical: ajusta la altura al alto de pantalla.
+        try:
+            raiz = _raiz_tk()
+            if raiz is not None:
+                alto_px = int(raiz.winfo_screenheight())
+                if alto_px > 0:
+                    alto_pulg = max(6.0, alto_px / DPI - 1.0)
+                    aspecto = (lon_max - lon_min) / max(
+                        1e-9, lat_max - lat_min)
+                    ancho_pulg = (0.02 + 2.4 + 0.2) + (alto_pulg - 0.9) * aspecto
+                    ancho_pulg = max(4.0, ancho_pulg)
+                    fig.set_size_inches(ancho_pulg, alto_pulg)
+        except Exception:
+            pass
+        ax = fig.add_axes([0.40, 0.10, 0.58, 0.84], projection=ccrs.PlateCarree())
+        ax_txt = fig.add_axes([0.02, 0.10, 0.30, 0.84])
+        ax_txt.axis('off')
+        _layout_nacional(fig, ax, ax_txt, lon_min, lon_max, lat_min, lat_max,
+                         titulo, "")
+        fig.canvas.mpl_connect(
+            'resize_event',
+            lambda ev: _layout_nacional(fig, ax, ax_txt,
+                                        lon_min, lon_max, lat_min, lat_max,
+                                        titulo, ""))
+    else:
+        fig = plt.figure(figsize=FIG_SIZE, dpi=DPI)
+        ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
     _base_mapa_planta(ax, lon_min, lon_max, lat_min, lat_max)
     _localidades_planta(ax, lon_min, lon_max, lat_min, lat_max, territorio=territorio)
     scatter, eventos_plot = _marcadores_planta(ax, eventos, fuente)
     handles_leyenda = _handles_eventos(fuente)
     if scatter is not None:
         _conectar_seleccion_eventos(fig, ax, scatter, eventos_plot)
-    ax.set_title("%s\n%s" % (titulo, subtitulo), fontsize=11,
-                 fontweight='bold', pad=10)
+    if layout_nacional:
+        # La disposición y el título izquierdo los gestiona _layout_nacional.
+        pass
+    else:
+        texto_titulo = titulo
+        if perfil is not None:
+            texto_titulo = "%s\n%s" % (titulo, subtitulo)
+        ax.set_title(texto_titulo, fontsize=11, fontweight='bold', pad=10)
     mostrar_json_en_popup(nombre_popup, eventos, fuente, percibidos,
                           total_eventos)
-    if n_asignados is None:
-        n_asignados = total_eventos
-    sufijo = ""
-    if fuente == "eventquery" and percibidos:
-        sufijo = " — %d percibidos" % percibidos
-    if totales:
-        fig.suptitle("%s — %d eventos asignados (de %d totales) — %d sospechosos%s"
-                     % (nombre_popup, n_asignados, totales, sospechosos, sufijo),
-                     fontsize=12, fontweight='bold', y=0.98)
-    elif n_asignados:
-        fig.suptitle("%s — %d eventos asignados — %d sospechosos%s"
-                     % (nombre_popup, n_asignados, sospechosos, sufijo),
-                     fontsize=12, fontweight='bold', y=0.98)
+    if territorio is not None:
+        # Los mapas de territorio usan un único título compacto (sin suptitle).
+        pass
+    else:
+        if n_asignados is None:
+            n_asignados = total_eventos
+        sufijo = ""
+        if fuente == "eventquery" and percibidos:
+            sufijo = " — %d percibidos" % percibidos
+        if totales:
+            fig.suptitle("%s — %d eventos asignados (de %d totales) — %d sospechosos%s"
+                         % (nombre_popup, n_asignados, totales, sospechosos, sufijo),
+                         fontsize=12, fontweight='bold', y=0.98)
+        elif n_asignados:
+            fig.suptitle("%s — %d eventos asignados — %d sospechosos%s"
+                         % (nombre_popup, n_asignados, sospechosos, sufijo),
+                         fontsize=12, fontweight='bold', y=0.98)
     fig.legend(handles=handles_leyenda, loc='lower center',
                bbox_to_anchor=(0.5, 0.02), ncol=len(handles_leyenda),
                fontsize=8, frameon=True)
-    plt.tight_layout(rect=[0, 0.10, 1, 0.94])
+    if not layout_nacional:
+        plt.tight_layout(rect=[0, 0.10, 1, 0.94])
     _agregar_boton_detener(fig)
     _indicador_modo_interaccion(fig)
     plt.show()
@@ -1455,6 +1621,8 @@ def main():
             ("Insular", insular),
             ("Antártico", antartico)
         ]:
+            if despliegue_detenido():
+                break
             if eventos_territorio:
                 p, n = plotear_planta(
                     eventos_territorio, fuente, perfil=None,
