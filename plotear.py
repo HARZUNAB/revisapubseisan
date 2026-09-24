@@ -1350,7 +1350,8 @@ def plotear_planta(eventos, fuente, perfil=None, n_asignados=None, totales=None,
                          % (nombre_popup, n_asignados, sospechosos, sufijo),
                          fontsize=12, fontweight='bold', y=0.98)
     fig.legend(handles=handles_leyenda, loc='lower center',
-               bbox_to_anchor=(0.5, 0.02), ncol=len(handles_leyenda),
+               bbox_to_anchor=(0.5, 0.02),
+               ncol=(2 if layout_nacional else len(handles_leyenda)),
                fontsize=8, frameon=True)
     if not layout_nacional:
         plt.tight_layout(rect=[0, 0.10, 1, 0.94])

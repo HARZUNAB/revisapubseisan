@@ -83,7 +83,7 @@ CRITERIOS_SOSPECHOSO = {
     "sin_catalogo": "ninguno",
     "pruebas": {
         "perp_max_km": {"activo": False, "valor": 55.0},
-        "residuo_max_km": {"activo": True, "valor": 25.0},
+        "residuo_max_km": {"activo": True, "valor": 30.0},
         "densidad_local": {"activo": False, "radio_km": 20.0,
                            "banda_prof_km": 10.0, "max_vecinos": 40},
         "knn": {"activo": True, "k": 5, "umbral_km": 15.0},
