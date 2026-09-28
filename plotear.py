@@ -339,6 +339,7 @@ def _handles_eventos(fuente):
 
 _cache_sismicidad = None
 _cache_hist_perfil = {}
+_cache_localidades = None
 
 
 def _cargar_sismicidad():
@@ -835,6 +836,97 @@ def _localidades_planta(ax, lon_min, lon_max, lat_min, lat_max, territorio=None)
         print("[Aviso] No se pudieron cargar las localidades: %s" % e)
 
 
+def _cargar_localidades():
+    """
+    Lee 'localidades.csv' (columnas Nombre, Lon, Lat) y lo guarda en caché de
+    módulo. Devuelve una lista de dicts {'nombre', 'lon', 'lat'} o None si el
+    archivo no existe o no tiene registros válidos.
+    """
+    global _cache_localidades
+    if _cache_localidades is not None:
+        return _cache_localidades
+    if not os.path.isfile(ARCHIVO_LOCALIDADES):
+        _cache_localidades = None
+        return None
+    localidades = []
+    try:
+        with open(ARCHIVO_LOCALIDADES, mode='r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                try:
+                    localidades.append({'nombre': row['Nombre'],
+                                        'lon': float(row['Lon']),
+                                        'lat': float(row['Lat'])})
+                except (TypeError, ValueError, KeyError):
+                    continue
+    except Exception as e:
+        print("[Aviso] No se pudieron cargar las localidades: %s" % e)
+        _cache_localidades = None
+        return None
+    _cache_localidades = localidades if localidades else None
+    return _cache_localidades
+
+
+def _localidad_mas_cercana(lon, lat):
+    """
+    Devuelve la localidad más cercana a (lon, lat) dentro de localidades.csv
+    como (nombre, distancia_km, direccion), donde 'direccion' es el punto
+    cardinal (N, NE, E, SE, S, SO, O, NO) en que está el punto respecto de la
+    localidad. None si no hay localidades cargadas.
+    """
+    localidades = _cargar_localidades()
+    if not localidades:
+        return None
+    mejor = None
+    mejor_dist = None
+    for loc in localidades:
+        lat_med = math.radians((lat + loc['lat']) / 2.0)
+        dx = (lon - loc['lon']) * 111.0 * math.cos(lat_med)
+        dy = (lat - loc['lat']) * 111.0
+        d = math.hypot(dx, dy)
+        if mejor_dist is None or d < mejor_dist:
+            mejor = loc
+            mejor_dist = d
+    if mejor is None:
+        return None
+    lat_med = math.radians((lat + mejor['lat']) / 2.0)
+    dx = (lon - mejor['lon']) * 111.0 * math.cos(lat_med)
+    dy = (lat - mejor['lat']) * 111.0
+    direccion = ""
+    if dx != 0.0 or dy != 0.0:
+        ang = math.degrees(math.atan2(dx, dy)) % 360.0
+        puntos = ['N', 'NE', 'E', 'SE', 'S', 'SO', 'O', 'NO']
+        direccion = puntos[int((ang + 22.5) // 45.0) % 8]
+    return mejor['nombre'], mejor_dist, direccion
+
+
+def _desplegar_referencia_geo(ax, ev):
+    """
+    Dibuja en la esquina inferior izquierda de la planta un recuadro con la
+    referencia geográfica del evento: distancia y dirección del epicentro
+    respecto de la localidad más cercana de localidades.csv.
+    """
+    try:
+        lon = float(ev['longitud'])
+        lat = float(ev['latitud'])
+    except (TypeError, ValueError, KeyError):
+        return
+    ref = _localidad_mas_cercana(lon, lat)
+    if ref is None:
+        return
+    nombre, dist_km, direccion = ref
+    if direccion:
+        linea = "%d km al %s de %s" % (round(dist_km), direccion, nombre)
+    else:
+        linea = "%d km de %s" % (round(dist_km), nombre)
+    ev_id = ev.get('id')
+    contenido = "Ev %s\n%s" % (ev_id, linea) if ev_id is not None and ev_id != '' else linea
+    t = ax.text(0.02, 0.04, contenido, transform=ax.transAxes, ha='left',
+                va='bottom', fontsize=9, fontweight='bold',
+                bbox=dict(boxstyle='round,pad=0.4', fc='white', ec='navy',
+                          alpha=0.92), zorder=14)
+    t._es_referencia_geo = True
+
 
 def _extent_planta_por_eventos(eventos, perfil=None, territorio=None, margen_adicional=None):
     """
@@ -1034,12 +1126,13 @@ def _extent_territorio(nombre, margen=None):
 
 
 def _limpiar_resaltado(ax):
-    """Elimina anillos de selección y viñetas marcados en 'ax'."""
+    """Elimina anillos de selección, viñetas y referencias marcados en 'ax'."""
     for coll in list(ax.collections):
         if getattr(coll, '_es_resaltado', False):
             coll.remove()
     for t in list(ax.texts):
-        if getattr(t, '_es_anotacion', False):
+        if getattr(t, '_es_anotacion', False) or getattr(
+                t, '_es_referencia_geo', False):
             t.remove()
 
 
@@ -1124,6 +1217,7 @@ def _resaltar_en_axes(ax, ev, anotar=False):
         try:
             _resaltar_evento(ax, ev, lon=float(ev['longitud']),
                              lat=float(ev['latitud']), anotar=anotar)
+            _desplegar_referencia_geo(ax, ev)
         except (TypeError, ValueError, KeyError):
             pass
     else:
@@ -1880,19 +1974,21 @@ def plotear_sin_perfil(eventos, fuente, percibidos, n_asignados=None,
 
 def _panel_analisis(grupos, perfiles_por_id, sin_perfil, fuente,
                     conteo_por_perfil, conteo_total, total_eventos,
-                    n_sospechosos, total_percibidos=None):
+                    n_sospechosos, total_percibidos=None, contenedor=None,
+                    etiqueta_fuente=None):
     """
-    Ventana inicial de análisis: tabla resumen de todos los perfiles con su
-    mini-perfil, y acciones para abrir cada uno en detalle (en paralelo),
-    abrir los mapas de territorio, filtrar por sospechosos, añadir la
-    sismicidad histórica al mini-perfil y restablecer la vista de inicio. Al
-    cerrar (Salir), los callbacks pendientes quedan desactivados para no tocar
-    widgets ya destruidos.
+    Panel de análisis: tabla resumen de todos los perfiles con su mini-perfil,
+    y acciones para abrir cada uno en detalle (en paralelo), abrir los mapas de
+    territorio, filtrar por sospechosos, añadir la sismicidad histórica al
+    mini-perfil y restablecer la vista de inicio. Al cerrar, los callbacks
+    pendientes quedan desactivados para no tocar widgets ya destruidos.
+
+    Si 'contenedor' es None se crea una ventana Toplevel propia (modo
+    autónomo, p. ej. plotear.py por línea de comandos). Si se pasa un widget
+    (ttk.Frame), el panel se construye EMBEBIDO dentro de él (modo app).
 
     Se apoya en la raíz Tk compartida (_asegurar_raiz). Devuelve True si el
-    panel quedó operativo (el programa debe mantener vivo el mainloop). Si no
-    hay backend interactivo devuelve False (quien llama cae al flujo
-    secuencial).
+    panel quedó operativo; False si no hay backend interactivo.
     """
     global _panel_activo
     import tkinter as tk
@@ -1903,20 +1999,24 @@ def _panel_analisis(grupos, perfiles_por_id, sin_perfil, fuente,
     if raiz is None:
         return False
     _panel_activo = True
+    embebido = contenedor is not None
 
     estado = {'percibidos': 0, 'filtro_sospechosos': False, 'activo': True,
               'mostrar_hist': False}
-    # Referencia al sub-panel de territorios (para poder cerrarlo desde Salir).
+    # Referencia al sub-panel de territorios (para poder cerrarlo al salir).
     terr_state = {'panel': None, 'cerrar': None}
     con_perfil = sum(len(v) for v in grupos.values())
 
-    panel = tk.Toplevel(raiz)
-    panel.title("Panel de análisis · %s — %d eventos (%d con perfil, %s)"
-                % (fuente, total_eventos, con_perfil,
-                   ("%d sospechosos" % n_sospechosos) if n_sospechosos else
-                   "sin sospechosos"))
-    panel.geometry("980x600")
-    panel.minsize(860, 480)
+    if embebido:
+        panel = contenedor
+    else:
+        panel = tk.Toplevel(raiz)
+        panel.title("Panel de análisis · %s — %d eventos (%d con perfil, %s)"
+                    % (fuente, total_eventos, con_perfil,
+                       ("%d sospechosos" % n_sospechosos) if n_sospechosos else
+                       "sin sospechosos"))
+        panel.geometry("980x600")
+        panel.minsize(860, 480)
 
     def _salir():
         global _panel_activo
@@ -1943,19 +2043,28 @@ def _panel_analisis(grupos, perfiles_por_id, sin_perfil, fuente,
             fig_mini.clear()
         except Exception:
             pass
-        try:
-            panel.destroy()
-        except Exception:
-            pass
-        try:
-            raiz.quit()
-        except Exception:
-            pass
+        if embebido:
+            # Limpia el área del panel; la aplicación sigue viva.
+            try:
+                for w in list(panel.winfo_children()):
+                    w.destroy()
+            except Exception:
+                pass
+        else:
+            try:
+                panel.destroy()
+            except Exception:
+                pass
+            try:
+                raiz.quit()
+            except Exception:
+                pass
 
-    panel.protocol("WM_DELETE_WINDOW", _salir)
+    if not embebido:
+        panel.protocol("WM_DELETE_WINDOW", _salir)
 
     # --- Cabecera con resumen e indicaciones ---
-    marco_cab = tk.Frame(panel)
+    marco_cab = ttk.Frame(panel)
     marco_cab.pack(fill='x', padx=8, pady=(8, 2))
     etiqueta_resumen = None
 
@@ -1972,25 +2081,30 @@ def _panel_analisis(grupos, perfiles_por_id, sin_perfil, fuente,
                  % (len(_percibidos_escritos), total_percibidos))
 
     if total_eventos:
-        tk.Label(marco_cab, justify='left', text=(
+        if etiqueta_fuente:
+            ttk.Label(marco_cab, justify='left', text="Fuente: %s"
+                      % etiqueta_fuente,
+                      font=('', 10, 'bold'),
+                      bootstyle='primary').pack(anchor='w')
+        ttk.Label(marco_cab, justify='left', text=(
             "%d eventos · %d con perfil · %d sospechosos · doble clic en una "
             "fila para abrir el detalle" % (total_eventos, con_perfil,
                                             n_sospechosos)),
-                 font=('', 10, 'bold')).pack(anchor='w')
+            font=('', 10, 'bold')).pack(anchor='w')
         if fuente == "eventquery" and total_percibidos:
-            etiqueta_resumen = tk.Label(marco_cab, justify='left', text="",
-                                        font=('', 9))
+            etiqueta_resumen = ttk.Label(marco_cab, justify='left', text="",
+                                         font=('', 9))
             etiqueta_resumen.pack(anchor='w')
             _actualizar_resumen()
     else:
-        tk.Label(marco_cab, text="No hay eventos para analizar.",
-                 font=('', 10, 'bold')).pack(anchor='w')
+        ttk.Label(marco_cab, text="No hay eventos para analizar.",
+                  font=('', 10, 'bold')).pack(anchor='w')
 
     # --- Zona principal: tabla (izquierda) + mini-perfil (derecha) ---
-    marco_principal = tk.Frame(panel)
+    marco_principal = ttk.Frame(panel)
     marco_principal.pack(fill='both', expand=True, padx=8, pady=4)
 
-    marco_tabla = tk.Frame(marco_principal)
+    marco_tabla = ttk.Frame(marco_principal)
     marco_tabla.pack(side='left', fill='both', expand=True)
     columnas = ('n', 'perfil', 'eventos', 'sosp', 'perc', 'along')
     arbol = ttk.Treeview(marco_tabla, columns=columnas, show='headings',
@@ -2104,9 +2218,9 @@ def _panel_analisis(grupos, perfiles_por_id, sin_perfil, fuente,
         top.geometry("780x520")
         terr_activo = {'activo': True}
 
-        marco = tk.Frame(top)
+        marco = ttk.Frame(top)
         marco.pack(fill='both', expand=True, padx=8, pady=8)
-        marco_tabla = tk.Frame(marco)
+        marco_tabla = ttk.Frame(marco)
         marco_tabla.pack(side='left', fill='y')
         cols = ('terr', 'eventos', 'sosp', 'perc')
         arbol_t = ttk.Treeview(marco_tabla, columns=cols, show='headings',
@@ -2184,13 +2298,13 @@ def _panel_analisis(grupos, perfiles_por_id, sin_perfil, fuente,
         arbol_t.bind('<Double-1>', lambda e: _abrir_detalle_terr())
         top.protocol("WM_DELETE_WINDOW", _cerrar_territorios)
 
-        marco_bot = tk.Frame(top)
+        marco_bot = ttk.Frame(top)
         marco_bot.pack(fill='x', padx=8, pady=(0, 8))
-        tk.Button(marco_bot, text="Abrir detalle",
-                  command=_abrir_detalle_terr, padx=10, pady=6).pack(
-                      side='left', padx=4)
-        tk.Button(marco_bot, text="Cerrar", command=_cerrar_territorios,
-                  padx=10, pady=6).pack(side='left', padx=4)
+        ttk.Button(marco_bot, text="Abrir detalle",
+                   command=_abrir_detalle_terr, padding=(10, 6)).pack(
+                       side='left', padx=4)
+        ttk.Button(marco_bot, text="Cerrar", command=_cerrar_territorios,
+                   padding=(10, 6)).pack(side='left', padx=4)
 
         terr_state['panel'] = top
         terr_state['cerrar'] = _cerrar_territorios
@@ -2233,12 +2347,12 @@ def _panel_analisis(grupos, perfiles_por_id, sin_perfil, fuente,
     arbol.bind('<Double-1>', lambda e: _abrir_perfil_actual())
 
     # --- Botones ---
-    marco_botones = tk.Frame(panel)
+    marco_botones = ttk.Frame(panel)
     marco_botones.pack(fill='x', padx=8, pady=(2, 8))
-    estilo_btn = {'padx': 10, 'pady': 6}
+    estilo_btn = {'padding': (10, 6)}
 
     def _boton(marco, texto, fn):
-        tk.Button(marco, text=texto, command=fn, **estilo_btn).pack(
+        ttk.Button(marco, text=texto, command=fn, **estilo_btn).pack(
             side='left', padx=4)
 
     var_hist = tk.BooleanVar(value=False)
@@ -2251,15 +2365,14 @@ def _panel_analisis(grupos, perfiles_por_id, sin_perfil, fuente,
 
     _boton(marco_botones, "Abrir detalle", _abrir_perfil_actual)
     _boton(marco_botones, "Mapas sin perfil", _abrir_territorios)
-    btn_filtro = tk.Button(marco_botones, text="Solo sospechosos",
-                           command=_alternar_filtro, **estilo_btn)
+    btn_filtro = ttk.Button(marco_botones, text="Solo sospechosos",
+                            command=_alternar_filtro, **estilo_btn)
     btn_filtro.pack(side='left', padx=4)
     _boton(marco_botones, "Inicio", _ir_inicio)
-    chk_hist = tk.Checkbutton(marco_botones, text="Sismicidad histórica",
-                              variable=var_hist, command=_alternar_hist,
-                              **estilo_btn)
-    chk_hist.pack(side='left', padx=4)
-    _boton(marco_botones, "Salir", _salir)
+    chk_hist = ttk.Checkbutton(marco_botones, text="Sismicidad histórica",
+                               variable=var_hist, command=_alternar_hist)
+    chk_hist.pack(side='left', padx=8)
+    _boton(marco_botones, ("Cerrar panel" if embebido else "Salir"), _salir)
 
     _poblar_arbol()
     if arbol.get_children():
@@ -2283,6 +2396,60 @@ def _panel_analisis(grupos, perfiles_por_id, sin_perfil, fuente,
     panel._poblar_arbol = _poblar_arbol
     panel._salir = _salir
     return True
+
+
+def _cargar_conteo(fuente):
+    """
+    Lee datos/conteo_perfiles_<fuente>.json (el que dejó generajson.py).
+    Devuelve (conteo_por_perfil, total); ({}, None) si no existe.
+    """
+    conteo_por_perfil = {}
+    conteo_total = None
+    conteo_archivo = rutas.p_datos('conteo_perfiles_%s.json' % fuente)
+    if os.path.isfile(conteo_archivo):
+        try:
+            with open(conteo_archivo) as f:
+                datos = json.load(f)
+            conteo_por_perfil = datos.get('conteo', {})
+            conteo_total = datos.get('total')
+        except Exception:
+            pass
+    return conteo_por_perfil, conteo_total
+
+
+def abrir_panel(contenedor, archivo_json, fuente, etiqueta_fuente=None):
+    """
+    Carga 'archivo_json' (eventos_<fuente>.json) y muestra el panel de análisis
+    EMBEBIDO en 'contenedor' (un widget ttk). Se usa desde la aplicación
+    (app.py). 'etiqueta_fuente' se muestra en la cabecera (# "No publicados de
+    seisan" pese a usar eventos_seisan.json). Devuelve True si el panel quedó
+    operativo.
+    """
+    if not archivo_json or not os.path.isfile(archivo_json):
+        return False
+    with open(archivo_json) as f:
+        eventos = json.load(f)
+    perfiles = ap.detectar_perfiles()
+    if not perfiles:
+        return False
+    perfiles_por_id = {p["id"]: p for p in perfiles}
+    grupos = {}
+    sin_perfil = []
+    for ev in eventos:
+        pid = ev.get('perfil')
+        if pid is None or pid not in perfiles_por_id:
+            sin_perfil.append(ev)
+        else:
+            grupos.setdefault(pid, []).append(ev)
+    n_eventos = len(eventos)
+    n_sospechosos = sum(1 for ev in eventos if ev.get('sospechoso'))
+    total_percibidos = sum(1 for ev in eventos if ev.get('percibido') == "S")
+    conteo_por_perfil, conteo_total = _cargar_conteo(fuente)
+    return _panel_analisis(grupos, perfiles_por_id, sin_perfil, fuente,
+                           conteo_por_perfil, conteo_total, n_eventos,
+                           n_sospechosos, total_percibidos,
+                           contenedor=contenedor,
+                           etiqueta_fuente=etiqueta_fuente)
 
 
 def _despliegue_secuencial(grupos, perfiles_por_id, sin_perfil, fuente,
@@ -2391,17 +2558,7 @@ def main():
 
     # Carga el conteo por perfil que generajson.py dejó en
     # datos/conteo_perfiles_<fuente>.json para mostrarlo a medida que se plotea.
-    conteo_por_perfil = {}
-    conteo_total = None
-    conteo_archivo = rutas.p_datos('conteo_perfiles_%s.json' % fuente)
-    if os.path.isfile(conteo_archivo):
-        try:
-            with open(conteo_archivo) as f:
-                datos_conteo = json.load(f)
-            conteo_por_perfil = datos_conteo.get('conteo', {})
-            conteo_total = datos_conteo.get('total')
-        except Exception:
-            pass
+    conteo_por_perfil, conteo_total = _cargar_conteo(fuente)
 
     with open(archivo) as contenido:
         eventos = json.load(contenido)

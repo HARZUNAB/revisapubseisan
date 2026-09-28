@@ -7,6 +7,7 @@ import datetime
 from datetime import timedelta
 
 import rutas
+import prog
 
 # cabeceras para cada archivo .txt de salida (Para plotear con google earth)
 cabecera_publica="fecha hora latitud longitud prof mag tipomag referencia percibido\n"
@@ -31,8 +32,7 @@ def detecta_repetidos(lista_sismos, max_seg, max_lat, max_lon, nombre_archivo, c
     for sismo in lista_sismos:
         repeticiones=0
         avance=avance+1
-        poravance=(avance*100)/len(lista_sismos)
-        print('avance proceso: {:.0f}'.format(poravance),'%', end='\r')
+        prog.avance(avance / len(lista_sismos))
         hora_1=sismo['fecha_hora']
         hora_1=datetime.datetime.strptime(hora_1, '%Y-%m-%d  %H:%M:%S')
 

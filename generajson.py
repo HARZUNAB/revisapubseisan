@@ -37,6 +37,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import asigna_perfiles as ap
 import sismicidad
 import rutas
+import prog
 
 
 def parsear_extra_args(args):
@@ -70,11 +71,23 @@ def procesar_csv(archivo_csv, fuente, umbral=None, k_peso=None,
     eventos = []
     archivo_origen = os.path.basename(archivo_csv)
 
+    # Progreso monotónico global: lectura 0-10%, asignación de perfiles 10-70%,
+    # evaluación de sospechosos 70-100%.
+    def _fraccion(ini, fin, sub):
+        return ini + (fin - ini) * min(1.0, max(0.0, sub))
+
+    try:
+        total_filas = sum(1 for _ in open(archivo_csv, 'r', newline='')) - 1
+    except OSError:
+        total_filas = 0
+    total_filas = max(1, total_filas)
+
     with open(archivo_csv, 'r', newline='') as csvfile:
         lector_csv = csv.reader(csvfile)
         next(lector_csv, None)  # Omitir encabezado si existe
 
-        for fila in lector_csv:
+        for i, fila in enumerate(lector_csv):
+            prog.avance(_fraccion(0.0, 0.10, i / total_filas))
             if len(fila) < 5:
                 continue
             try:
@@ -116,12 +129,15 @@ def procesar_csv(archivo_csv, fuente, umbral=None, k_peso=None,
 
     # Asigna perfil a cada evento (incluye la profundidad en la métrica)
     eventos = ap.asignar_eventos(eventos, umbral=umbral, k_peso=k_peso,
-                                 umbral_perp=umbral_perp)
+                                 umbral_perp=umbral_perp,
+                                 on_avance=lambda f:
+                                     prog.avance(_fraccion(0.10, 0.70, f)))
 
     # Decide si cada evento ploteado podría estar mal localizado (sospechoso)
     # usando el slab y la sismicidad histórica local. La sismicidad histórica
     # jamás se evalúa; solo se usa como referencia.
-    for ev in eventos:
+    for i, ev in enumerate(eventos):
+        prog.avance(_fraccion(0.70, 1.0, (i + 1) / len(eventos)))
         ev['sospechoso'] = sismicidad.es_sospechoso(ev)
 
     # Elimina claves auxiliares usadas por el asignador
@@ -201,6 +217,8 @@ def procesar_csv(archivo_csv, fuente, umbral=None, k_peso=None,
                    'con_perfil': with_perfil,
                    'sin_perfil': sin_perfil,
                    'conteo': conteo_labels}, f, indent=4)
+
+    prog.avance(1.0)
 
     return total_eventos, with_perfil, sin_perfil
 

@@ -8,6 +8,7 @@ from datetime import timedelta
 import pandas as pd
 
 import rutas
+import prog
 
 # parametros de los dos niveles de filtro (amplio y estricto)
 MAX_SEG_AMPLIO=6
@@ -39,8 +40,7 @@ def comparar(listacsv_1, listacsv_2, max_seg, max_lat, max_lon, sufijo):
     # compara fecha_hora de cada evento de seisan para determinar si esta publicado 
     for sismo2 in listacsv_2:
         avance=avance+1
-        poravance=(avance*100)/numsis_csv_2
-        print('avance proceso: {:.0f}'.format(poravance),'%', end='\r')
+        prog.avance(avance / numsis_csv_2)
 
         for sismo1 in listacsv_1:
             # con esto tengo dudas de como programe al principio, podria hacer falta sumarle un minuto a las horas 1 y 2

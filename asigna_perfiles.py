@@ -357,18 +357,24 @@ def asignar_perfil_evento(lon, lat, prof,
 
 
 def asignar_eventos(eventos, umbral=UMBRAL_DIST_KM, k_peso=K_PESO_PROFUNDIDAD,
-                    umbral_perp=UMBRAL_PERP_KM, grillas_dir=GRILLAS_DIR):
+                    umbral_perp=UMBRAL_PERP_KM, grillas_dir=GRILLAS_DIR,
+                    on_avance=None):
     """
     Asigna una lista de eventos (dicts con 'lon', 'lat', 'prof') a sus perfiles.
     Adorna cada dict con los campos: perfil, along_km, perp_km, residuo_km,
     dist_asoc. Devuelve la lista modificada.
+    on_avance: callback opcional recibido la fracción [0,1] por cada evento
+    procesado (lo usa generajson.py para reportar avance a la interfaz).
     """
     perfiles = detectar_perfiles(grillas_dir)
     if not perfiles:
         print("[asigna_perfiles] Aviso: no se detectaron perfiles en '{}'.".format(
             grillas_dir))
 
-    for ev in eventos:
+    total_ev = len(eventos)
+    for i, ev in enumerate(eventos):
+        if on_avance:
+            on_avance((i + 1) / total_ev if total_ev else 1.0)
         try:
             lon = float(ev.get('lon'))
             lat = float(ev.get('lat'))

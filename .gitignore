@@ -2,3 +2,6 @@
 *.xyz
 *.npy
 __pycache__/
+
+# entorno virtual del proyecto
+.venv/

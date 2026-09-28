@@ -7,6 +7,7 @@ import datetime
 from datetime import timedelta
 
 import rutas
+import prog
 
 # archivos de salida
 archivo2=open(rutas.p_informes("rep_seisan_exclu.txt"), "w")
@@ -72,8 +73,7 @@ for sismo2 in listacsv_2:
     delta_dia=0
     delta_segundos=0
     avance=avance+1
-    poravance=(avance*100)/numsis_csv_2
-    print('avance proceso: {:.0f}'.format(poravance),'%', end='\r')
+    prog.avance(avance / numsis_csv_2)
     hora_1=sismo2['fecha_hora']
     hora_1=datetime.datetime.strptime(hora_1, '%Y-%m-%d  %H:%M:%S')
     for sismo3 in listacsv_3:

@@ -10,6 +10,7 @@ import pandas as pandasForSortingCSV
 from os import remove
 
 import rutas
+import prog
 
 csv_file = open(sys.argv[1])
 #fh = open(sys.argv[2],"w", encoding='utf-8')
@@ -19,6 +20,7 @@ csvreader = csv.reader(csv_file)
 # Asigna datos del csv de origen
 #csvData = pandasForSortingCSV.read_csv(csv_file)
 csvData = pd.read_csv(csv_file)
+num_total = len(csvData)
                                          
 # Ordena datos por fecha
 csvData = csvData.sort_values(["time"], ascending=True)
@@ -45,6 +47,8 @@ num_datos=0
 for linea in csvreader:
 	num_datos=num_datos+1
 	listacsv[linea[0]] = linea	
+	if num_total > 0:
+		prog.avance(num_datos / num_total)	
 
 # Ordena Diccionario por llave (fecha del evento)
 sortedDict = sorted(listacsv.items(), key=operator.itemgetter(0))
@@ -59,11 +63,14 @@ if num_datos>0:
 	fh.write('-----------------------------------------------------------------------------------------------------------------\n')
 	fh.write("%s \t%s \t%s \t%s \t%s \t%s \t%s \t%s \t%s \n" %('Fecha','    Hora',' Lat',' Long','Prof','Mag','T_Mag','Perc','Obs'))
 	fh.write('-----------------------------------------------------------------------------------------------------------------\n')
+	num_escritos=0
 	for sismo in sortedDict:
 	#for index,row in csvData.iterrows():
 		# sismo[0] es la llave (el tiempo que usaste para ordenar)
     	# sismo[1] es la lista con [time, lat, long, depth, mag, etc...]
     
+		num_escritos = num_escritos + 1
+		prog.avance(num_escritos / num_total if num_total > 0 else 1.0)
 		datos_sismo = sismo[1]
 		
 		# Extraemos la fecha de la posición 0 de la lista de datos
@@ -103,7 +110,6 @@ if num_datos>0:
 	print(sys.argv[2])
 	print(salida2)
 	# Sacar comentario si se desea borrar este archivo
-	remove(sys.argv[1])
 	remove(salidacsv)
 	exit()
 else:
