@@ -1962,16 +1962,6 @@ def plotear_ventana(eventos, perfil, fuente, percibidos, n_asignados=None,
                           con_boton_detener=con_boton_detener)
 
 
-def plotear_sin_perfil(eventos, fuente, percibidos, n_asignados=None,
-                       totales=None, bloquear=True, mostrar_json=True,
-                       con_boton_detener=True):
-    """Plotea los eventos sin perfil solo sobre la planta."""
-    return plotear_planta(eventos, fuente, perfil=None,
-                          n_asignados=n_asignados, totales=totales,
-                          bloquear=bloquear, mostrar_json=mostrar_json,
-                          con_boton_detener=con_boton_detener)
-
-
 def _panel_analisis(grupos, perfiles_por_id, sin_perfil, fuente,
                     conteo_por_perfil, conteo_total, total_eventos,
                     n_sospechosos, total_percibidos=None, contenedor=None,

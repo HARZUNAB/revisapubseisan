@@ -205,8 +205,13 @@ def detectar_perfiles(grillas_dir=GRILLAS_DIR):
         slab = _centrolinea_perfil(os.path.join(grillas_dir, nombre))
         if slab is None:
             continue
-        topo_p, topo_alt = _leer_topo(os.path.join(
-            grillas_dir, "topoP%03d.tmp" % num))
+        # La topografía usa el mismo ancho de dígitos que el slab (P###).
+        # Si no existe con ese ancho, se intenta la numeración de 3 dígitos.
+        num_txt = nombre[len("slabP"):-len(".tmp")]
+        ruta_topo = os.path.join(grillas_dir, "topoP%s.tmp" % num_txt)
+        if not os.path.isfile(ruta_topo):
+            ruta_topo = os.path.join(grillas_dir, "topoP%03d.tmp" % num)
+        topo_p, topo_alt = _leer_topo(ruta_topo)
         perfiles.append({
             "id": "P%03d" % num,
             "num": num,

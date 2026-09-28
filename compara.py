@@ -19,6 +19,15 @@ MAX_LAT_LON_ESTRICTO=1.0
 # cabecera para cada archivo .txt de salida (Para plotear con google earth)
 cabecera="fecha hora latitud longitud prof mag tipomag analista percibido\n"
 
+# formato de fecha_hora en los .csv (dos espacios entre fecha y hora)
+_FORMATO='%Y-%m-%d  %H:%M:%S'
+
+def _parsear_fecha_hora(texto):
+    # normaliza el segundo 60 -> 59 (eventquery llega con segundos inválidos)
+    if texto[-2:]=='60':
+        texto=texto[0:18]+'59'
+    return datetime.datetime.strptime(texto, _FORMATO)
+
 def comparar(listacsv_1, listacsv_2, max_seg, max_lat, max_lon, sufijo):
     # archivos de salida
     archivo=open(rutas.p_informes("no_pub_todos_"+sufijo+".txt"), "w")
@@ -42,21 +51,14 @@ def comparar(listacsv_1, listacsv_2, max_seg, max_lat, max_lon, sufijo):
         avance=avance+1
         prog.avance(avance / numsis_csv_2)
 
+        # el estado (publicado/sin actualizar) se reinicia por cada evento de seisan
+        diferencias=0
+        per_noper=''
+
         for sismo1 in listacsv_1:
             # con esto tengo dudas de como programe al principio, podria hacer falta sumarle un minuto a las horas 1 y 2
-            if sismo1['fecha_hora'][-2:]=='60':
-                hora1=sismo1['fecha_hora'][0:18]+'59'
-            else:
-                hora1=sismo1['fecha_hora']
-
-            if sismo2['fecha_hora'][-2:]=='60':
-                hora2=sismo2['fecha_hora'][0:18]+'59'
-            else:
-                hora2=sismo2['fecha_hora']
-
-            # Convierte string fecha_hora en un dato de tipo datetime
-            hora1=datetime.datetime.strptime(hora1, '%Y-%m-%d  %H:%M:%S')         
-            hora2=datetime.datetime.strptime(hora2, '%Y-%m-%d  %H:%M:%S')
+            hora1=sismo1['dt']
+            hora2=sismo2['dt']
 
             # determinando el delta en dias y segundos
             h2_menos_h1=hora2-hora1
@@ -88,12 +90,12 @@ def comparar(listacsv_1, listacsv_2, max_seg, max_lat, max_lon, sufijo):
             # con los eventos extraidos con seisan
             # solo entraran a este if eventos comparados que sean del mismo dia en una ventana de segundos como maximo
             if (delta_dia == 0 or delta_dia_aux== 0) and (delta_seg <= max_seg or delta_seg_aux <= max_seg):
-                pub=+1
+                pub=1
                 # el delta maximo en coordenadas es de 1 grado en latitud y longitud
                 if delta_lat <= max_lat and delta_lon <= max_lon:
                     if sismo2['lat'] != sismo1['lat'] or sismo2['lon'] != sismo1['lon'] or sismo2['prof'] != sismo1['prof']:
                         per_noper=sismo1['perc']
-                        diferencias=+1
+                        diferencias=1
 
         # Si el valor de la variable pub es 0 el sismo no esta publicado        
         if pub==0:
@@ -105,7 +107,9 @@ def comparar(listacsv_1, listacsv_2, max_seg, max_lat, max_lon, sufijo):
             if float(sismo2['mag'])>=2.5:
                 totsobre2_5=totsobre2_5+1
                 archivo2.write(sismo2['fecha_hora']+' '+sismo2['lat']+' '+sismo2['lon']+' '+sismo2['prof']+' '+sismo2['mag']+' '+sismo2['tipo_mag']+' '+sismo2['analista']+' '+'?'+"\n")
-                listanopub.append(sismo2)
+                # copia sin la clave temporal 'dt' para el .csv final
+                listanopub.append({k: v for k, v in sismo2.items()
+                                   if k != 'dt'})
 
         else:
 
@@ -179,6 +183,7 @@ for linea1 in csvreader_1:
 
     diccsv_1={
         "fecha_hora":linea1[1],
+        "dt":_parsear_fecha_hora(linea1[1]),
         "lat":linea1[2],
         "lon":linea1[3],
         "prof":linea1[4],
@@ -217,6 +222,7 @@ for linea2 in csvreader_2:
 
     diccsv_2={
         "fecha_hora":linea2[1],
+		"dt":_parsear_fecha_hora(linea2[1]),
 		"lat":linea2[2],
 		"lon":linea2[3],
 		"prof":linea2[4],

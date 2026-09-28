@@ -9,6 +9,14 @@ from datetime import timedelta
 import rutas
 import prog
 
+_FORMATO='%Y-%m-%d  %H:%M:%S'
+
+def _parsear_fecha_hora(texto):
+    # normaliza el segundo 60 -> 59 antes de convertir
+    if texto[-2:]=='60':
+        texto=texto[0:18]+'59'
+    return datetime.datetime.strptime(texto, _FORMATO)
+
 # archivos de salida
 archivo2=open(rutas.p_informes("rep_seisan_exclu.txt"), "w")
 
@@ -40,6 +48,7 @@ numsis_csv_3=0
 for linea2 in csvreader_2:
     diccsv_2={
         "fecha_hora":linea2[1],
+        "dt":_parsear_fecha_hora(linea2[1]),
 		"analista":linea2[2],
     }
     listacsv_2.append(diccsv_2)
@@ -53,6 +62,7 @@ print('total de eventos a revisar', numsis_csv_2, "( fuente archivo excluidos de
 for linea3 in csvreader_3:
     diccsv_3={
         "fecha_hora":linea3[1],
+        "dt":_parsear_fecha_hora(linea3[1]),
 		"analista":linea3[7],
     }
     listacsv_3.append(diccsv_3)
@@ -74,11 +84,9 @@ for sismo2 in listacsv_2:
     delta_segundos=0
     avance=avance+1
     prog.avance(avance / numsis_csv_2)
-    hora_1=sismo2['fecha_hora']
-    hora_1=datetime.datetime.strptime(hora_1, '%Y-%m-%d  %H:%M:%S')
+    hora_1=sismo2['dt']
     for sismo3 in listacsv_3:
-        hora_2=sismo3['fecha_hora']
-        hora_2=datetime.datetime.strptime(hora_2, '%Y-%m-%d  %H:%M:%S')
+        hora_2=sismo3['dt']
         
         deltatiempo1=hora_2-hora_1
         deltatiempo2=hora_1-hora_2
@@ -91,7 +99,7 @@ for sismo2 in listacsv_2:
         deltaminutos2=deltatiempo2.min
         deltasegundos2=deltatiempo2.total_seconds()
 
-        # Ventana de 3 segundos para filtrar posibles eventos repetidos
+        # Ventana de 6 segundos para filtrar posibles eventos repetidos
         if (deltadias1 == 0 or deltadias2 == 0) and ((deltasegundos1 >=0 and deltasegundos1 <=6) or (deltasegundos2 >= 0 and deltasegundos2 <= 6)):
             archivo2.write(sismo2['fecha_hora']+' '+sismo2['analista']+"\n")
             rep_seisan_exclu=rep_seisan_exclu+1
@@ -114,8 +122,8 @@ fecha_inicio = datetime.datetime.strptime(fecha_inicio, '%Y-%m-%d  %H:%M:%S')
 fecha_termino = datetime.datetime.strptime(fecha_termino, '%Y-%m-%d  %H:%M:%S')
 tiempo_proc=fecha_termino-fecha_inicio
 
-#print("----------------------------------- Salida -----------------------------------")
-#print('tiempo proceso:', tiempo_proc) 
+##print("----------------------------------- Salida -----------------------------------")
+print('tiempo proceso:', tiempo_proc) 
 print('Posibles repetidos excluidos en seisan:',rep_seisan_exclu_total)
 print('Archivos generados...')
 print(archivo2.name)

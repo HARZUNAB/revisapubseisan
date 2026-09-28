@@ -63,7 +63,7 @@ ANALISIS_PLAN = [
     {"nombre": "Revisando collect",
      "scripts": ("revisacollect.py",), "peso": 0.15},
     {"nombre": "Comparando publicados v/s procesados",
-     "scripts": ("comparar.py",), "peso": 0.25},
+     "scripts": ("compara.py",), "peso": 0.25},
     {"nombre": "Revisando excluidos",
      "scripts": ("revisaexcluidos.py", "repetidosexclu.py"), "peso": 0.10},
     {"nombre": "Revisando repetidos",
@@ -326,10 +326,12 @@ class App:
     # ------------------------------------------------------------ procesos
     def _popen(self, args):
         args = list(args)
-        if args and args[0].endswith(".py"):
+        script = args[0] if args and args[0].endswith(".py") else None
+        if script:
             args = [PY] + args
         self._log("$ " + " ".join(args))
-        self._preparar_etapa_script(args[0])
+        if script:
+            self._preparar_etapa_script(script)
         env = dict(os.environ)
         env["RV_PROG"] = "1"
         try:
@@ -539,6 +541,7 @@ class App:
         contenido.text.configure(state=DISABLED, font=("Consolas", 9))
 
         rutas = {}
+        totales = {}
         for titulo, ruta in REP_FILES:
             if os.path.isfile(ruta):
                 with open(ruta) as f:
@@ -550,17 +553,33 @@ class App:
                 etiqueta = "%s  (no generado)" % titulo
             iid = arbol.insert("", END, values=(etiqueta, n))
             rutas[iid] = ruta
+            totales[iid] = n
+
+        MAX_VISIBLES = 2000
 
         def al_seleccionar(evento=None):
             sel = arbol.selection()
             if not sel:
                 return
-            ruta = rutas[sel[0]]
+            iid = sel[0]
+            ruta = rutas[iid]
             contenido.text.configure(state=NORMAL)
             contenido.text.delete("1.0", END)
             if os.path.isfile(ruta):
+                lineas = []
                 with open(ruta) as f:
-                    contenido.text.insert(END, f.read())
+                    for _ in range(MAX_VISIBLES):
+                        linea = f.readline()
+                        if not linea:
+                            break
+                        lineas.append(linea)
+                contenido.text.insert(END, "".join(lineas))
+                n_total = totales[iid]
+                if n_total > MAX_VISIBLES:
+                    leftovers = n_total - (len(lineas) - 1)
+                    contenido.text.insert(
+                        END, "\n... (%d líneas más, de %d en total)"
+                        % (leftovers, n_total))
             else:
                 contenido.text.insert(END, "(no generado)")
             contenido.text.configure(state=DISABLED)

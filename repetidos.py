@@ -23,6 +23,14 @@ MAX_LAT_LON_AMPLIO=2.0
 MAX_SEG_ESTRICTO=3
 MAX_LAT_LON_ESTRICTO=1.0
 
+_FORMATO='%Y-%m-%d  %H:%M:%S'
+
+def _parsear_fecha_hora(texto):
+    # normaliza el segundo 60 -> 59 antes de convertir
+    if texto[-2:]=='60':
+        texto=texto[0:18]+'59'
+    return datetime.datetime.strptime(texto, _FORMATO)
+
 def detecta_repetidos(lista_sismos, max_seg, max_lat, max_lon, nombre_archivo, cabecera, campos):
     # revisa cada sismo contra toda la lista y cuenta las coincidencias dentro de la ventana de tiempo y coordenadas
     total_repetidos=0
@@ -33,12 +41,10 @@ def detecta_repetidos(lista_sismos, max_seg, max_lat, max_lon, nombre_archivo, c
         repeticiones=0
         avance=avance+1
         prog.avance(avance / len(lista_sismos))
-        hora_1=sismo['fecha_hora']
-        hora_1=datetime.datetime.strptime(hora_1, '%Y-%m-%d  %H:%M:%S')
+        hora_1=sismo['dt']
 
         for sismo_aux in lista_sismos:
-            hora_2=sismo_aux['fecha_hora']
-            hora_2=datetime.datetime.strptime(hora_2, '%Y-%m-%d  %H:%M:%S')
+            hora_2=sismo_aux['dt']
 
             deltatiempo1=hora_2-hora_1
             deltatiempo2=hora_1-hora_2
@@ -127,6 +133,7 @@ for linea1 in csvreader_1:
 
     diccsv_1={
         "fecha_hora":linea1[1],
+        "dt":_parsear_fecha_hora(linea1[1]),
         "lat":linea1[2],
         "lon":linea1[3],
         "prof":linea1[4],
@@ -165,6 +172,7 @@ for linea2 in csvreader_2:
 
     diccsv_2={
         "fecha_hora":linea2[1],
+		"dt":_parsear_fecha_hora(linea2[1]),
 		"lat":linea2[2],
 		"lon":linea2[3],
 		"prof":linea2[4],

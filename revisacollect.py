@@ -1,13 +1,10 @@
 
 import datetime
-import time
 import csv
 import pandas as pd
 import sys, os
 from os import remove
-import operator
 import pandas as pandasForSortingCSV
-from thefuzz import process, fuzz
 import Levenshtein
 
 import rutas

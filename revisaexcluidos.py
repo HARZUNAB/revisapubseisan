@@ -97,7 +97,7 @@ for linea in archivo1:
 
 	# revisa si le faltan los segundos a linea de solucion
 	# si es asi agrega estos segundos y concatena el resto de la linea
-	if linea[16].isalpha() or linea[17].isalpha():
+	if len(linea) <= 17 or linea[16].isalpha() or linea[17].isalpha():
 		#print(linea)
 		#print(linea[16],' / ', linea[17])
 		revisar.write(linea+"\n")
@@ -123,9 +123,8 @@ for linea in archivo1:
 	fecha_hora=sismo[0]+"-"+sismo[1]+"-"+sismo[2]+"  "+sismo[3][0:2]+":"+sismo[3][-2:]+":"+segundos
 	analista=sismo[len(sismo)-1]
 	
-	if horamala=='n':
-		sismolista=fecha_hora, analista
-		listacsv.append(sismolista)
+	sismolista=fecha_hora, analista
+	listacsv.append(sismolista)
 
 df = pd.DataFrame(listacsv)
 df.columns=['Fecha_Hora', 'Analista']
