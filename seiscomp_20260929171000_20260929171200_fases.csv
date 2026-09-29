@@ -1,0 +1,1 @@
+id_evento,id_origen,id_pick,red,estacion,loc,cha,fase,llegada_utc,llegada_us,correccion_s,residual_s,azimut,distancia,usada,peso,polaridad,periodo,snr,mag_estacion,tipo_mag_estacion,est_lat,est_lon,est_elev,est_lugar,est_pais

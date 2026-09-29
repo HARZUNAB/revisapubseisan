@@ -1965,7 +1965,7 @@ def plotear_ventana(eventos, perfil, fuente, percibidos, n_asignados=None,
 def _panel_analisis(grupos, perfiles_por_id, sin_perfil, fuente,
                     conteo_por_perfil, conteo_total, total_eventos,
                     n_sospechosos, total_percibidos=None, contenedor=None,
-                    etiqueta_fuente=None):
+                    etiqueta_fuente=None, n_huerfanos=0):
     """
     Panel de análisis: tabla resumen de todos los perfiles con su mini-perfil,
     y acciones para abrir cada uno en detalle (en paralelo), abrir los mapas de
@@ -2001,10 +2001,14 @@ def _panel_analisis(grupos, perfiles_por_id, sin_perfil, fuente,
         panel = contenedor
     else:
         panel = tk.Toplevel(raiz)
-        panel.title("Panel de análisis · %s — %d eventos (%d con perfil, %s)"
-                    % (fuente, total_eventos, con_perfil,
-                       ("%d sospechosos" % n_sospechosos) if n_sospechosos else
-                       "sin sospechosos"))
+        titulo_panel = ("Panel de análisis · %s — %d eventos (%d con perfil, %s)"
+                        % (fuente, total_eventos, con_perfil,
+                           ("%d sospechosos" % n_sospechosos)
+                           if n_sospechosos else "sin sospechosos"))
+        if n_huerfanos:
+            titulo_panel += (" | %d con perfil no disponible (JSON de otro "
+                             "set de grillas)" % n_huerfanos)
+        panel.title(titulo_panel)
         panel.geometry("980x600")
         panel.minsize(860, 480)
 
@@ -2202,9 +2206,23 @@ def _panel_analisis(grupos, perfiles_por_id, sin_perfil, fuente,
             except Exception:
                 terr_state['panel'] = None
 
+        motivos = {}
+        for ev in sin_perfil:
+            m = ev.get('motivo') or 'sin_perfil'
+            motivos[m] = motivos.get(m, 0) + 1
+        etq_mot = {'fuera_cobertura_norte': 'norte',
+                   'fuera_cobertura_sur': 'sur',
+                   'fuera_cobertura_extremo': 'extremo',
+                   'fuera_cobertura': 'otro',
+                   'fuera_umbral': 'umbral',
+                   'sin_coordenadas': 'sin coords',
+                   'sin_perfiles': 'sin perfiles'}
+        detalle = ", ".join("%s: %d" % (etq_mot.get(k, k), v)
+                            for k, v in sorted(motivos.items()))
         top = tk.Toplevel(raiz)
-        top.title("Mapas sin perfil · %s — %d eventos sin perfil"
-                  % (fuente, len(sin_perfil)))
+        top.title("Mapas sin perfil · %s — %d eventos sin perfil%s"
+                  % (fuente, len(sin_perfil),
+                     (" (%s)" % detalle) if detalle else ""))
         top.geometry("780x520")
         terr_activo = {'activo': True}
 
@@ -2407,6 +2425,38 @@ def _cargar_conteo(fuente):
     return conteo_por_perfil, conteo_total
 
 
+def _agrupar_por_perfil(eventos, perfiles_por_id):
+    """
+    Agrupa los eventos por perfil disponible en el set actual.
+
+    Devuelve (grupos, sin_perfil, huerfanos):
+        grupos     : {id_perfil: [eventos]}  (el perfil existe en grillas)
+        sin_perfil : eventos sin perfil asignado (perfil None)
+        huerfanos  : {id_perfil: [eventos]}  cuyo perfil NO existe en el set
+                     actual; indica que el JSON se generó con otro conjunto de
+                     grillas. No se mezclan con sin_perfil ni se dibujan contra
+                     otra sección.
+    """
+    grupos = {}
+    sin_perfil = []
+    huerfanos = {}
+    for ev in eventos:
+        pid = ev.get('perfil')
+        if pid is None:
+            sin_perfil.append(ev)
+        elif pid in perfiles_por_id:
+            grupos.setdefault(pid, []).append(ev)
+        else:
+            huerfanos.setdefault(pid, []).append(ev)
+    if huerfanos:
+        n = sum(len(v) for v in huerfanos.values())
+        print("[Aviso] El JSON se generó con otro conjunto de grillas: %d "
+              "eventos usan perfiles que ya no existen (%s). No se dibujan "
+              "contra otra sección; re-corra 'Generar JSON' para actualizarlos."
+              % (n, ", ".join(sorted(huerfanos))))
+    return grupos, sin_perfil, huerfanos
+
+
 def abrir_panel(contenedor, archivo_json, fuente, etiqueta_fuente=None):
     """
     Carga 'archivo_json' (eventos_<fuente>.json) y muestra el panel de análisis
@@ -2423,14 +2473,8 @@ def abrir_panel(contenedor, archivo_json, fuente, etiqueta_fuente=None):
     if not perfiles:
         return False
     perfiles_por_id = {p["id"]: p for p in perfiles}
-    grupos = {}
-    sin_perfil = []
-    for ev in eventos:
-        pid = ev.get('perfil')
-        if pid is None or pid not in perfiles_por_id:
-            sin_perfil.append(ev)
-        else:
-            grupos.setdefault(pid, []).append(ev)
+    grupos, sin_perfil, huerfanos = _agrupar_por_perfil(eventos, perfiles_por_id)
+    n_huerfanos = sum(len(v) for v in huerfanos.values())
     n_eventos = len(eventos)
     n_sospechosos = sum(1 for ev in eventos if ev.get('sospechoso'))
     total_percibidos = sum(1 for ev in eventos if ev.get('percibido') == "S")
@@ -2439,7 +2483,8 @@ def abrir_panel(contenedor, archivo_json, fuente, etiqueta_fuente=None):
                            conteo_por_perfil, conteo_total, n_eventos,
                            n_sospechosos, total_percibidos,
                            contenedor=contenedor,
-                           etiqueta_fuente=etiqueta_fuente)
+                           etiqueta_fuente=etiqueta_fuente,
+                           n_huerfanos=n_huerfanos)
 
 
 def _despliegue_secuencial(grupos, perfiles_por_id, sin_perfil, fuente,
@@ -2560,17 +2605,9 @@ def main():
 
     perfiles_por_id = {p["id"]: p for p in perfiles}
 
-    # agrupa en memoria por perfil
-    grupos = {}
-    sin_perfil = []
-    for evento in eventos:
-        pid = evento.get('perfil')
-        if pid is None:
-            sin_perfil.append(evento)
-        elif pid in perfiles_por_id:
-            grupos.setdefault(pid, []).append(evento)
-        else:
-            sin_perfil.append(evento)
+    # agrupa en memoria por perfil (avisa si el JSON es de otro set de grillas)
+    grupos, sin_perfil, huerfanos = _agrupar_por_perfil(eventos, perfiles_por_id)
+    n_huerfanos = sum(len(v) for v in huerfanos.values())
 
     n_eventos = len(eventos)
     n_sospechosos = sum(1 for ev in eventos if ev.get('sospechoso'))
@@ -2584,7 +2621,8 @@ def main():
     # secuencial histórico.
     if _panel_analisis(grupos, perfiles_por_id, sin_perfil, fuente,
                        conteo_por_perfil, conteo_total, n_eventos,
-                       n_sospechosos, total_percibidos):
+                       n_sospechosos, total_percibidos,
+                       n_huerfanos=n_huerfanos):
         # Mantiene viva la raíz Tk: procesa eventos del panel y de las
         # figuras de detalle hasta que el usuario cierra la sesión. Se usa
         # el mainloop de la raíz (y no plt.show()) para que el ancla oculta

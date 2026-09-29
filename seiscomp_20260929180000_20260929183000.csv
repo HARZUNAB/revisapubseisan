@@ -1,0 +1,2 @@
+id_evento,ot_utc,magnitud,tipo_magnitud,fases,rms,azgap,latitud,longitud,profundidad_km,agencia,operador,region,estatus,base_datos
+csn_sc62026tcqlp,2026-09-29 18:21:49,4.3,MLv,24,0.4,273.0,-22.223711717895554,-67.7633515444261,190.7,CSN,tark,Chile-Bolivia Border Region,confirmed,seiscomp2

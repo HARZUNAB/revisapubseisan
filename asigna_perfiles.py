@@ -20,11 +20,25 @@ Para cada evento y cada perfil se calcula:
     dist_asoc²    = dist_horiz_km² + (K_PESO_PROFUNDIDAD * residuo_km)²
 
 El evento se asigna al perfil de menor dist_asoc si dist_asoc <= UMBRAL.
-Si todos los perfiles superan el umbral pero alguno queda a <= UMBRAL_PERP_KM
-de distancia perpendicular (perpendicular), el evento se asocia igualmente a
-ese perfil (respaldo por cercanía horizontal; la profundidad se evalúa luego
-en las reglas de "sospechoso"). Solo si también supera UMBRAL_PERP_KM el
-evento queda SIN PERFIL (None).
+Si ningún perfil cumple ese umbral, se aplica un respaldo por COBERTURA del
+set de perfiles, de modo que el comportamiento no dependa de constantes
+pensadas para un set particular:
+
+  * Lateral: un evento que cae entre dos perfiles adyacentes (dentro de la
+    celda de Voronoi del perfil más cercano) se asigna a ese perfil, aunque
+    su distancia perpendicular supere el umbral fijo. Así no quedan "cuñas"
+    sin perfil entre perfiles separados.
+  * Borde: el primer y el último perfil (por latitud media) delimitan el set.
+    Un evento del lado EXTERIOR de un perfil de borde solo se asigna si su
+    distancia es <= MARGEN_BORDE_KM; si no, queda SIN PERFIL con motivo
+    "fuera_cobertura_norte" / "fuera_cobertura_sur".
+  * Longitudinal: si la proyección cae más allá de los extremos de la sección
+    en más de MARGEN_BORDE_KM, el evento queda SIN PERFIL con motivo
+    "fuera_cobertura_extremo" (p. ej. eventos oceánicos lejanos).
+
+El campo "motivo" del resultado queda en None cuando el evento fue asignado.
+UMBRAL_PERP_KM (opcional, None por defecto) actúa como tope lateral explícito
+para quien quiera limitar el respaldo; con None no hay tope.
 """
 
 import os
@@ -54,14 +68,24 @@ GRILLAS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 # la planta. Default 110 km (criterio similar a mapasOPA/perfiles.py).
 UMBRAL_DIST_KM = 110.0
 
-# UMBRAL_PERP_KM: umbral de respaldo por distancia PERPENDICULAR (km). Si el
-# evento no cumple el umbral combinado (dist_asoc) con ningún perfil, se
-# asocia al perfil horizontalmente más cercano si su distancia perpendicular
-# es <= este valor. Así un evento claramente "sobre" un perfil se asocia
-# aunque su profundidad difiera mucho del slab; la profundidad se evalúa
-# luego en las reglas de "sospechoso" (residuo_max_km). Default 55 km
-# (≈ medio espaciado de ~1° entre perfiles).
-UMBRAL_PERP_KM = 55.0
+# UMBRAL_PERP_KM: tope lateral OPCIONAL (km) para el respaldo por cobertura.
+# Con None (default) no hay tope: un evento entre dos perfiles adyacentes se
+# asigna al más cercano sin importar la distancia perpendicular, y los bordes
+# del set se controlan con MARGEN_BORDE_KM. Si se fija un valor, el respaldo
+# lateral solo actúa cuando la distancia perpendicular es <= ese valor.
+UMBRAL_PERP_KM = None
+
+# MARGEN_BORDE_KM: margen (km) admitido más allá del borde del set de
+# perfiles (primer/último perfil y extremos de cada sección). Con 0.0, un
+# evento al norte del perfil más septentrional, al sur del más meridional, o
+# más allá del extremo de una sección, queda SIN PERFIL y se reporta como
+# "fuera de cobertura" para que se use un set con mayor cobertura. Un valor
+# mayor permite asignarlo al perfil de borde hasta esa distancia.
+MARGEN_BORDE_KM = 0.0
+
+# _TOL_KM: tolerancia geométrica (km) para no rechazar un evento por un
+# sobrepaso ínfimo del extremo o del borde (ruido de proyección).
+_TOL_KM = 1.0
 
 # K_PESO_PROFUNDIDAD: peso de la profundidad frente a la distancia horizontal
 # en la métrica  dist_asoc² = dist_horiz² + (K * residuo_slab)².
@@ -186,6 +210,8 @@ def detectar_perfiles(grillas_dir=GRILLAS_DIR):
     Salida: lista (ordenada por número) de diccionarios con:
         id    : 'P001', 'P002', ... (nombre derivado del archivo)
         num   : número entero del perfil
+        archivo : nombre exacto del archivo slab (p. ej. 'slabP001.tmp')
+        lat_media : latitud media de la sección (para ubicar los bordes)
         slab  : diccionario de _centrolinea_perfil
         topo_p : array con distancia a lo largo de la topografía (km)
         topo_alt : array con altitud en metros
@@ -212,20 +238,46 @@ def detectar_perfiles(grillas_dir=GRILLAS_DIR):
         if not os.path.isfile(ruta_topo):
             ruta_topo = os.path.join(grillas_dir, "topoP%03d.tmp" % num)
         topo_p, topo_alt = _leer_topo(ruta_topo)
+        lat_media = float(np.nanmean(slab["lat"])) if len(slab["lat"]) else None
         perfiles.append({
             "id": "P%03d" % num,
             "num": num,
+            "archivo": nombre,
+            "lat_media": lat_media,
             "slab": slab,
             "topo_p": topo_p,
             "topo_alt": topo_alt,
         })
+
+    # Aviso si dos archivos producen el mismo id (p. ej. slabP01.tmp y
+    # slabP001.tmp): significarían secciones distintas bajo la misma etiqueta
+    # y perfiles_por_id se quedaría con una sola en silencio.
+    por_id = {}
+    for per in perfiles:
+        por_id.setdefault(per["id"], []).append(per["archivo"])
+    for pid, archivos in sorted(por_id.items()):
+        if len(archivos) > 1:
+            print("[asigna_perfiles] Aviso: el id '%s' lo producen varios "
+                  "archivos (%s). Normalice la nomenclatura de 'grillas' para "
+                  "evitar que se confundan secciones distintas."
+                  % (pid, ", ".join(archivos)))
+
     return perfiles
 
 
-def distancia_al_perfil(lon, lat, perfil):
+def _detalle_perfil(lon, lat, perfil):
     """
-    Distancia perpendicular (km) del punto (lon,lat) al perfil y su posición
-    a lo largo del perfil (km).
+    Geometría del punto (lon,lat) respecto de la línea central del perfil.
+
+    Devuelve una tupla (perp, along, lat_proj, exceso) o None si el perfil no
+    tiene geometría suficiente:
+        perp     : distancia perpendicular (km) al tramo más cercano.
+        along    : posición a lo largo del perfil (km), recortada a los
+                   extremos de la sección.
+        lat_proj : latitud del punto más cercano de la sección (para saber de
+                   qué lado queda el evento).
+        exceso   : distancia (km) que la proyección cae más allá del extremo
+                   de la sección (0 si proyecta dentro de la sección).
     """
     slab = perfil["slab"]
     lon_c = slab["lon"]
@@ -233,7 +285,7 @@ def distancia_al_perfil(lon, lat, perfil):
     p_c = slab["p"]
 
     if len(lon_c) < 2:
-        return None, None
+        return None
 
     lon_ref = float(np.nanmean(lon_c))
     lat_ref = float(np.nanmean(lat_c))
@@ -254,17 +306,34 @@ def distancia_al_perfil(lon, lat, perfil):
     vy = y_p - y_c[:-1]
 
     t = (vx * dx + vy * dy) / np.where(seg_len2 > 0, seg_len2, 1.0)
-    t = np.clip(t, 0.0, 1.0)
+    tc = np.clip(t, 0.0, 1.0)
 
-    fx = x_c[:-1] + t * dx
-    fy = y_c[:-1] + t * dy
+    fx = x_c[:-1] + tc * dx
+    fy = y_c[:-1] + tc * dy
 
     dist2 = (x_p - fx) ** 2 + (y_p - fy) ** 2
     i = int(np.argmin(dist2))
     dist_min = math.sqrt(dist2[i])
 
-    along = p_c[i] + t[i] * (p_c[i + 1] - p_c[i])
-    return dist_min, along
+    along = p_c[i] + tc[i] * (p_c[i + 1] - p_c[i])
+    lat_proj = lat_c[i] + tc[i] * (lat_c[i + 1] - lat_c[i])
+
+    seg = math.sqrt(seg_len2[i]) if seg_len2[i] > 0 else 0.0
+    exceso = abs(float(t[i]) - float(tc[i])) * seg
+
+    return dist_min, along, float(lat_proj), exceso
+
+
+def distancia_al_perfil(lon, lat, perfil):
+    """
+    Distancia perpendicular (km) del punto (lon,lat) al perfil y su posición
+    a lo largo del perfil (km). Envoltorio de _detalle_perfil.
+    """
+    det = _detalle_perfil(lon, lat, perfil)
+    if det is None:
+        return None, None
+    perp, along, _lat_proj, _exceso = det
+    return perp, along
 
 
 def profundidad_slab_en(perfil, along_km):
@@ -283,37 +352,83 @@ def profundidad_slab_en(perfil, along_km):
     return float(np.interp(float(along_km), p, depth, left=np.nan, right=np.nan))
 
 
+def cobertura_set(perfiles):
+    """Extensión geográfica (lat/lon min-máx) del set de perfiles detectado."""
+    lats, lons = [], []
+    for p in perfiles:
+        for v in p["slab"]["lat"]:
+            if not math.isnan(v):
+                lats.append(float(v))
+        for v in p["slab"]["lon"]:
+            if not math.isnan(v):
+                lons.append(float(v))
+    if not lats or not lons:
+        return None
+    return {"n_perfiles": len(perfiles),
+            "lat_min": min(lats), "lat_max": max(lats),
+            "lon_min": min(lons), "lon_max": max(lons)}
+
+
+def _espaciado_mediano(perfiles):
+    """Separación mediana (km) entre perfiles consecutivos por latitud media."""
+    lats = sorted(p["lat_media"] for p in perfiles
+                  if p.get("lat_media") is not None)
+    if len(lats) < 2:
+        return None
+    difs = [abs(lats[i + 1] - lats[i]) for i in range(len(lats) - 1)]
+    return float(np.median(difs)) * GRADO_KM_LAT
+
+
 def asignar_perfil_evento(lon, lat, prof,
                           perfiles,
                           umbral=UMBRAL_DIST_KM,
                           k_peso=K_PESO_PROFUNDIDAD,
-                          umbral_perp=UMBRAL_PERP_KM):
+                          umbral_perp=UMBRAL_PERP_KM,
+                          margen_borde=MARGEN_BORDE_KM,
+                          espaciado=None):
     """
     Asigna un evento (lon, lat, prof) al perfil más cercano según la métrica
     combinada. Devuelve un diccionario con:
 
-        perfil      : id del perfil ('P001', ...) o None si no cumple el umbral
+        perfil      : id del perfil ('P001', ...) o None si queda fuera
         along_km    : posición a lo largo del perfil (km)
         perp_km     : distancia perpendicular epicentro-perfil (km)
         residuo_km  : |prof - slab(along)| en km (None si slab sin cobertura)
         dist_asoc   : índice de asociación (km)
+        motivo      : None si fue asignado; si no, por qué quedó fuera:
+                      'fuera_cobertura_norte' / '_sur' / '_extremo' /
+                      'fuera_umbral' / 'sin_perfiles'.
 
-    Si ningún perfil cumple el umbral combinado (dist_asoc <= umbral) pero
-    el perfil horizontalmente más cercano está a <= umbral_perp km, el evento
-    se asocia a ese perfil de todos modos (respaldo por cercanía horizontal;
-    su profundidad se evalúa luego en las reglas de "sospechoso").
+    Cobertura del set: primero se determina si el evento cae dentro. Un evento
+    entre dos perfiles (celda de Voronoi del más cercano) siempre está dentro.
+    En los bordes (primer/último perfil por latitud media) se admite hasta
+    MEDIO HUECO entre perfiles (cobertura natural del set) más MARGEN_BORDE_KM.
+    Más allá de los extremos de la sección (longitudinal) se admite el mismo
+    margen. Si queda dentro, se asigna al perfil de menor dist_asoc cuando
+    dist_asoc <= umbral; si no, al perfil más cercano. Si queda fuera, queda
+    sin perfil con su motivo.
 
     La determinación de "sospechoso" (posible mal localizado) no se hace aquí;
     vive en sismicidad.es_sospechoso(), que recibe estos parámetros y aplica
     los criterios configurables (slab + sismicidad histórica).
     """
-    mejor = None  # (dist_asoc, perfil_id, along, perp, residuo)
-    mejor_perp = None  # (perp, perfil_id, along, residuo, dist_asoc) mínima perp
+    # Bordes del set por latitud media de cada sección.
+    con_lat = [p for p in perfiles if p.get("lat_media") is not None]
+    id_norte = max(con_lat, key=lambda p: p["lat_media"])["id"] if con_lat else None
+    id_sur = min(con_lat, key=lambda p: p["lat_media"])["id"] if con_lat else None
+
+    if espaciado is None:
+        espaciado = _espaciado_mediano(perfiles)
+    medio_hueco = (0.5 * espaciado) if espaciado else 0.0
+
+    mejor = None        # (dist_asoc, id, along, perp, residuo)
+    mejor_perp = None   # (perp, id, along, residuo, dist_asoc, lat_proj, exceso)
 
     for per in perfiles:
-        perp, along = distancia_al_perfil(lon, lat, per)
-        if perp is None:
+        det = _detalle_perfil(lon, lat, per)
+        if det is None:
             continue
+        perp, along, lat_proj, exceso = det
 
         slab_prof = profundidad_slab_en(per, along)
         if math.isnan(slab_prof):
@@ -328,53 +443,87 @@ def asignar_perfil_evento(lon, lat, prof,
         if mejor is None or dist_asoc < mejor[0]:
             mejor = (dist_asoc, per["id"], along, perp, residuo)
         if mejor_perp is None or perp < mejor_perp[0]:
-            mejor_perp = (perp, per["id"], along, residuo, dist_asoc)
+            mejor_perp = (perp, per["id"], along, residuo, dist_asoc,
+                          lat_proj, exceso)
 
     if mejor is None:
         return {"perfil": None, "along_km": None, "perp_km": None,
-                "residuo_km": None, "dist_asoc": None}
+                "residuo_km": None, "dist_asoc": None,
+                "motivo": "sin_perfiles"}
 
-    dist_asoc, perfil_id, along, perp, residuo = mejor
-    if dist_asoc <= umbral:
-        return {
-            "perfil": perfil_id,
-            "along_km": round(float(along), 3),
-            "perp_km": round(float(perp), 3),
-            "residuo_km": round(residuo, 3) if residuo is not None else None,
-            "dist_asoc": round(dist_asoc, 3),
-        }
+    (perp_p, perfil_id_p, along_p, residuo_p, dist_asoc_p,
+     lat_proj_p, exceso_p) = mejor_perp
 
-    # Respaldo por cercanía horizontal: si el perfil más cercano en
-    # perpendicular está dentro de umbral_perp, se asocia igualmente.
-    if mejor_perp is not None and mejor_perp[0] <= umbral_perp:
-        perp_p, perfil_id_p, along_p, residuo_p, dist_asoc_p = mejor_perp
+    # Cobertura: interior siempre dentro; borde hasta medio hueco + margen;
+    # longitudinal hasta el margen.
+    if math.isnan(lat_proj_p):
+        lat_proj_p = lat
+    al_norte = lat > lat_proj_p
+    hacia_afuera = ((perfil_id_p == id_norte and al_norte) or
+                    (perfil_id_p == id_sur and not al_norte))
+    borde_ok = ((not hacia_afuera) or
+                (perp_p <= medio_hueco + margen_borde + _TOL_KM))
+    exceso_ok = exceso_p <= margen_borde + _TOL_KM
+    cap_ok = (umbral_perp is None) or (perp_p <= umbral_perp + _TOL_KM)
+
+    if exceso_ok and borde_ok and cap_ok:
+        # Dentro de cobertura: métrica primaria o, si no, el más cercano.
+        dist_asoc, perfil_id, along, perp, residuo = mejor
+        if dist_asoc <= umbral:
+            return {
+                "perfil": perfil_id,
+                "along_km": round(float(along), 3),
+                "perp_km": round(float(perp), 3),
+                "residuo_km": round(residuo, 3) if residuo is not None else None,
+                "dist_asoc": round(dist_asoc, 3),
+                "motivo": None,
+            }
         return {
             "perfil": perfil_id_p,
             "along_km": round(float(along_p), 3),
             "perp_km": round(float(perp_p), 3),
             "residuo_km": round(residuo_p, 3) if residuo_p is not None else None,
             "dist_asoc": round(dist_asoc_p, 3),
+            "motivo": None,
         }
 
-    # Excede ambos umbrales: queda sin perfil.
-    return {"perfil": None, "along_km": None, "perp_km": None,
-            "residuo_km": None, "dist_asoc": round(dist_asoc, 3)}
+    # Fuera de cobertura: clasificar el motivo.
+    if not exceso_ok:
+        motivo = "fuera_cobertura_extremo"
+    elif not cap_ok:
+        motivo = "fuera_umbral"
+    elif perfil_id_p == id_norte and al_norte:
+        motivo = "fuera_cobertura_norte"
+    elif perfil_id_p == id_sur and not al_norte:
+        motivo = "fuera_cobertura_sur"
+    else:
+        motivo = "fuera_cobertura"
+    return {"perfil": None, "along_km": None,
+            "perp_km": round(float(perp_p), 3),
+            "residuo_km": round(residuo_p, 3) if residuo_p is not None else None,
+            "dist_asoc": round(dist_asoc_p, 3),
+            "motivo": motivo}
 
 
 def asignar_eventos(eventos, umbral=UMBRAL_DIST_KM, k_peso=K_PESO_PROFUNDIDAD,
-                    umbral_perp=UMBRAL_PERP_KM, grillas_dir=GRILLAS_DIR,
-                    on_avance=None):
+                    umbral_perp=UMBRAL_PERP_KM, margen_borde=MARGEN_BORDE_KM,
+                    grillas_dir=GRILLAS_DIR, perfiles=None, on_avance=None):
     """
     Asigna una lista de eventos (dicts con 'lon', 'lat', 'prof') a sus perfiles.
     Adorna cada dict con los campos: perfil, along_km, perp_km, residuo_km,
-    dist_asoc. Devuelve la lista modificada.
+    dist_asoc, motivo. Devuelve la lista modificada.
+
+    perfiles: lista ya detectada (para reutilizarla y conocer la cobertura del
+              set); si es None se detecta desde grillas_dir.
     on_avance: callback opcional recibido la fracción [0,1] por cada evento
     procesado (lo usa generajson.py para reportar avance a la interfaz).
     """
-    perfiles = detectar_perfiles(grillas_dir)
+    if perfiles is None:
+        perfiles = detectar_perfiles(grillas_dir)
     if not perfiles:
         print("[asigna_perfiles] Aviso: no se detectaron perfiles en '{}'.".format(
             grillas_dir))
+    espaciado = _espaciado_mediano(perfiles)
 
     total_ev = len(eventos)
     for i, ev in enumerate(eventos):
@@ -393,12 +542,15 @@ def asignar_eventos(eventos, umbral=UMBRAL_DIST_KM, k_peso=K_PESO_PROFUNDIDAD,
 
         if lon is None:
             ev.update({"perfil": None, "along_km": None, "perp_km": None,
-                       "residuo_km": None, "dist_asoc": None})
+                       "residuo_km": None, "dist_asoc": None,
+                       "motivo": "sin_coordenadas"})
             continue
 
         resultado = asignar_perfil_evento(lon, lat, prof, perfiles,
                                           umbral=umbral, k_peso=k_peso,
-                                          umbral_perp=umbral_perp)
+                                          umbral_perp=umbral_perp,
+                                          margen_borde=margen_borde,
+                                          espaciado=espaciado)
         ev.update(resultado)
 
     return eventos

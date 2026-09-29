@@ -8,7 +8,7 @@ archivo JSON por fuente con todos los eventos, cada uno adornado con su
 perfil y las coordenadas calculadas para el ploteo.
 
 Uso:
-    python3 generajson.py <archivo_csv> <fuente> [--umbral=KM] [--k=K] [--umbral-perp=KM]
+    python3 generajson.py <archivo_csv> <fuente> [--umbral=KM] [--k=K] [--umbral-perp=KM] [--margen-borde=KM]
 
     archivo_csv : archivo .csv con los eventos (p. ej. salida_collect.csv o
                   new_2_*.csv)
@@ -17,10 +17,11 @@ Uso:
                   UMBRAL_DIST_KM de asigna_perfiles.py)
     --k=K       : peso de la profundidad en la métrica (default
                   K_PESO_PROFUNDIDAD de asigna_perfiles.py)
-    --umbral-perp=KM : umbral de respaldo por distancia perpendicular (km)
-                  para asociar eventos cercanos al perfil aunque su
-                  profundidad difiera del slab (default UMBRAL_PERP_KM de
-                  asigna_perfiles.py)
+    --umbral-perp=KM : tope lateral OPCIONAL del respaldo por cobertura (default
+                  UMBRAL_PERP_KM de asigna_perfiles.py; None = sin tope)
+    --margen-borde=KM : margen (km) admitido más allá de la cobertura natural
+                  del set (medio hueco entre perfiles y extremos de sección).
+                  Default MARGEN_BORDE_KM de asigna_perfiles.py (0.0).
 
 Salida:
     eventos_<fuente>.json    (lista de eventos con sus campos originales más
@@ -41,10 +42,11 @@ import prog
 
 
 def parsear_extra_args(args):
-    """Extrae --umbral=KM, --k=K y --umbral-perp=KM de los argumentos."""
+    """Extrae --umbral=KM, --k=K, --umbral-perp=KM y --margen-borde=KM."""
     umbral = None
     k_peso = None
     umbral_perp = None
+    margen_borde = None
     for arg in args:
         if arg.startswith("--umbral="):
             umbral = float(arg.split("=", 1)[1])
@@ -52,11 +54,13 @@ def parsear_extra_args(args):
             k_peso = float(arg.split("=", 1)[1])
         elif arg.startswith("--umbral-perp="):
             umbral_perp = float(arg.split("=", 1)[1])
-    return umbral, k_peso, umbral_perp
+        elif arg.startswith("--margen-borde="):
+            margen_borde = float(arg.split("=", 1)[1])
+    return umbral, k_peso, umbral_perp, margen_borde
 
 
 def procesar_csv(archivo_csv, fuente, umbral=None, k_peso=None,
-                 umbral_perp=None):
+                 umbral_perp=None, margen_borde=None):
     """
     Procesa el .csv, asigna perfiles y escribe eventos_<fuente>.json.
     Devuelve (total_eventos, con_perfil, sin_perfil).
@@ -67,6 +71,8 @@ def procesar_csv(archivo_csv, fuente, umbral=None, k_peso=None,
         k_peso = ap.K_PESO_PROFUNDIDAD
     if umbral_perp is None:
         umbral_perp = ap.UMBRAL_PERP_KM
+    if margen_borde is None:
+        margen_borde = ap.MARGEN_BORDE_KM
 
     eventos = []
     archivo_origen = os.path.basename(archivo_csv)
@@ -127,9 +133,14 @@ def procesar_csv(archivo_csv, fuente, umbral=None, k_peso=None,
             evento['lat'] = latitud
             eventos.append(evento)
 
-    # Asigna perfil a cada evento (incluye la profundidad en la métrica)
+    # Asigna perfil a cada evento (incluye la profundidad en la métrica).
+    # Se detectan los perfiles una sola vez para conocer también la cobertura
+    # del set y reportarla.
+    perfiles = ap.detectar_perfiles()
     eventos = ap.asignar_eventos(eventos, umbral=umbral, k_peso=k_peso,
                                  umbral_perp=umbral_perp,
+                                 margen_borde=margen_borde,
+                                 perfiles=perfiles,
                                  on_avance=lambda f:
                                      prog.avance(_fraccion(0.10, 0.70, f)))
 
@@ -195,6 +206,14 @@ def procesar_csv(archivo_csv, fuente, umbral=None, k_peso=None,
         per = ev.get('perfil')
         conteo[per] = conteo.get(per, 0) + 1
 
+    # Desglose de los sin perfil por motivo (cobertura del set detectado)
+    motivos = {}
+    for ev in eventos:
+        if ev.get('perfil') is None:
+            m = ev.get('motivo') or 'sin_perfil'
+            motivos[m] = motivos.get(m, 0) + 1
+    cobertura = ap.cobertura_set(perfiles)
+
     print('Total de eventos:', total_eventos)
     print('Eventos con perfil:', with_perfil)
     n_sospechosos = sum(1 for ev in eventos if ev.get('sospechoso'))
@@ -203,6 +222,26 @@ def procesar_csv(archivo_csv, fuente, umbral=None, k_peso=None,
               % (n_sospechosos, sospechosos_csv))
     if sin_perfil:
         print('Eventos sin perfil (se plotearán solo en planta):', sin_perfil)
+        if cobertura:
+            print('  cobertura del set: lat %.2f..%.2f | lon %.2f..%.2f '
+                  '(%d perfiles)'
+                  % (cobertura['lat_min'], cobertura['lat_max'],
+                     cobertura['lon_min'], cobertura['lon_max'],
+                     cobertura['n_perfiles']))
+        etiquetas = {
+            'fuera_cobertura_norte': 'fuera de cobertura (norte del set)',
+            'fuera_cobertura_sur': 'fuera de cobertura (sur del set)',
+            'fuera_cobertura_extremo': 'fuera del alcance de las secciones',
+            'fuera_cobertura': 'fuera de cobertura',
+            'fuera_umbral': 'fuera del tope lateral (--umbral-perp)',
+            'sin_coordenadas': 'sin coordenadas',
+            'sin_perfiles': 'no se detectaron perfiles',
+        }
+        for m in sorted(motivos):
+            print('  %-40s %d' % (etiquetas.get(m, m), motivos[m]))
+        if any(k.startswith('fuera_cobertura') for k in motivos):
+            print('  [Aviso] El set de grillas no cubre todo el catálogo: use '
+                  'un set con mayor cobertura (o ajuste --margen-borde).')
     #print('Distribución por perfil:')
     conteo_labels = {}
     for per in sorted(conteo, key=lambda x: (x is None, '' if x is None else x)):
@@ -216,7 +255,9 @@ def procesar_csv(archivo_csv, fuente, umbral=None, k_peso=None,
         json.dump({'total': total_eventos,
                    'con_perfil': with_perfil,
                    'sin_perfil': sin_perfil,
-                   'conteo': conteo_labels}, f, indent=4)
+                   'conteo': conteo_labels,
+                   'cobertura_set': cobertura,
+                   'sin_perfil_motivos': motivos}, f, indent=4)
 
     prog.avance(1.0)
 
@@ -230,12 +271,13 @@ if __name__ == "__main__":
 
     archivo_csv = sys.argv[1]
     fuente = sys.argv[2]
-    umbral_usr, k_usr, umbral_perp_usr = parsear_extra_args(sys.argv[3:])
+    umbral_usr, k_usr, umbral_perp_usr, margen_usr = parsear_extra_args(
+        sys.argv[3:])
 
     if not os.path.isfile(archivo_csv):
         print("Error: no se encontró el archivo '%s'." % archivo_csv)
         sys.exit(1)
 
     procesar_csv(archivo_csv, fuente, umbral=umbral_usr, k_peso=k_usr,
-                 umbral_perp=umbral_perp_usr)
+                 umbral_perp=umbral_perp_usr, margen_borde=margen_usr)
     print('Archivo JSON generado:', 'eventos_%s.json' % fuente)
