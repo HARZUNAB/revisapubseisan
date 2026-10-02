@@ -2,9 +2,9 @@
 """
 generajson.py
 =============
-Lee un archivo .csv de eventos (seisan o eventquery), asigna cada evento al
-perfil de subducción más cercano usando asigna_perfiles.py y genera UN solo
-archivo JSON por fuente con todos los eventos, cada uno adornado con su
+Lee un archivo .csv de eventos (seisan, seiscomp o eventquery), asigna cada
+evento al perfil de subducción más cercano usando asigna_perfiles.py y genera
+UN solo archivo JSON por fuente con todos los eventos, cada uno adornado con su
 perfil y las coordenadas calculadas para el ploteo.
 
 Uso:
@@ -12,7 +12,21 @@ Uso:
 
     archivo_csv : archivo .csv con los eventos (p. ej. salida_collect.csv o
                   new_2_*.csv)
-    fuente      : "seisan" | "eventquery"
+    fuente      : "seisan" | "seiscomp" | "eventquery"
+
+Las tres fuentes se leen por POSICIÓN, y el archivo tiene que llevar el índice
+de la fila como columna 0 (es lo que escribe pandas con to_csv() por defecto),
+porque 'id' y 'n_fila_origen' salen de ahí. El resto de las columnas es:
+
+    seisan   : Fecha_Hora, Latitud, Longitud, Prof., Mag., Tipo_mag., Analista
+    seiscomp : igual que seisan, con el OPERADOR de la solución preferred de
+               SeisComp en la columna del analista (ver seiscomp_a_parametros.py)
+    eventquery: Fecha_Hora, Latitud, Longitud, Prof., Mag., Tipo_mag.,
+               Referencia, Percep.   <- 'percibido' sale de la última
+
+Ojo: en eventquery la columna 7 es la Referencia (la región), NO un analista.
+Las filas sin latitud o longitud parseable se descartan en silencio, así que el
+conversor de cada fuente tiene que avisar cuántas descartó.
     --umbral=KM : umbral de dist_asoc (km) para asignar perfil (default
                   UMBRAL_DIST_KM de asigna_perfiles.py)
     --k=K       : peso de la profundidad en la métrica (default
@@ -59,6 +73,135 @@ def parsear_extra_args(args):
     return umbral, k_peso, umbral_perp, margen_borde
 
 
+def _distancia_aprox_km(lat1, lon1, lat2, lon2):
+    """Distancia aproximada en km entre dos puntos, para mostrar al lado del
+    nombre. Es la fórmula equirectangular, que a esta escala (decenas de km)
+    alcanza y no necesita pyproj ni cartopy."""
+    try:
+        lat1, lon1, lat2, lon2 = (float(x) for x in (lat1, lon1, lat2, lon2))
+    except (TypeError, ValueError):
+        return None
+    import math
+    latm = math.radians((lat1 + lat2) / 2.0)
+    dx = (lon1 - lon2) * 111.32 * math.cos(latm)
+    dy = (lat1 - lat2) * 110.57
+    return (dx * dx + dy * dy) ** 0.5
+
+
+def _cargar_atribucion(nombre_fuente):
+    """
+    Lee datos/atribucion_<nombre_fuente>.csv y devuelve un índice
+    {fecha_hora: [entradas de cruce]}.
+
+    El emparejamiento se hace por la cadena exacta de fecha_hora porque es el
+    único campo que se conserva idéntico en los dos lados. NO se usa el índice
+    de fila: todos_eventquery.csv concatena varios new_2_*.csv sin renumerar
+    la primera columna, así que n_fila_origen se repite entre ventanas y
+    emparejaría eventos de ventanas distintas. Por eso, cuando hay más de una
+    entrada con la misma hora se descarta la que no coincide en coordenadas.
+    """
+    ruta = rutas.p_datos('atribucion_%s.csv' % nombre_fuente)
+    if not os.path.isfile(ruta):
+        return None
+    indice = {}
+    try:
+        with open(ruta, 'r', newline='') as csvfile:
+            for fila in csv.DictReader(csvfile):
+                indice.setdefault(fila.get('fecha_eventquery', ''), []).append(fila)
+    except OSError:
+        return None
+    if not indice:
+        return None
+    return indice
+
+
+def _analistas_para_evento(indice, fecha_hora, latitud, longitud):
+    """
+    Devuelve la lista de fuentes que aportaron un analista para este evento,
+    o None si ninguna. Cada entrada trae los analistas distintos de esa fuente
+    y el mejor cruce (menor Δt).
+    """
+    if not indice:
+        return None
+    candidatas = indice.get(fecha_hora)
+    if not candidatas:
+        return None
+    # Descarta las entradas de otro evento que happencaer en el mismo segundo.
+    if len(candidatas) > 1:
+        proche = [c for c in candidatas
+                  if _distancia_aprox_km(latitud, longitud,
+                                         c.get('lat_eventquery'),
+                                         c.get('lon_eventquery')) is not None
+                  and _distancia_aprox_km(latitud, longitud,
+                                          c.get('lat_eventquery'),
+                                          c.get('lon_eventquery')) < 0.5]
+        if proche:
+            candidatas = proche
+    if not candidatas:
+        return None
+
+    por_fuente = {}
+    for c in candidatas:
+        entrada = por_fuente.setdefault(c.get('fuente', 'local'), {
+            'fuente': c.get('fuente', 'local'),
+            'n_soluciones': 0,
+            'dt_seg': None,
+            'km': None,
+        })
+        entrada['n_soluciones'] += 1
+        try:
+            dt = float(c.get('dt_seg'))
+        except (TypeError, ValueError):
+            dt = None
+        if dt is not None and (entrada['dt_seg'] is None or dt < entrada['dt_seg']):
+            km = _distancia_aprox_km(latitud, longitud,
+                                     c.get('lat_eventquery'), c.get('lon_eventquery'))
+            entrada['dt_seg'] = dt
+            entrada['km'] = None if km is None else round(km, 1)
+    for entrada in por_fuente.values():
+        entrada['analistas'] = sorted({
+            (c.get('analista') or '(sin nombre)')
+            for c in candidatas if c.get('fuente', 'local') == entrada['fuente']})
+    # Primero SeisComp, después Seisan: el orden de inserción ya viene así
+    # porque se cargan en ese orden, pero se hace explícito por si cambia.
+    return sorted(por_fuente.values(), key=lambda e: 0 if e['fuente'] == 'seiscomp' else 1)
+
+
+def _texto_posibles_analistas(ev):
+    """
+    'SeisComp: cris; Seisan: jere' para los eventos de eventquery, que no
+    traen responsable. Para seisan y seiscomp devuelve el nombre que ya viene
+    en su propio CSV, que en ese caso NO es una inferencia sino un dato.
+    """
+    entradas = ev.get('analistas')
+    if entradas:
+        return '; '.join('%s: %s' % (e['fuente'], ', '.join(e['analistas']))
+                         for e in entradas)
+    return ev.get('analista') or ''
+
+
+def _texto_calidad_cruce(ev):
+    """
+    'SeisComp dt 0.2s 3.0km'. El Δt y la distancia van siempre al lado del
+    nombre porque el nombre es una inferencia por tolerancia: con 0.2 s y 3 km
+    se cree, con 30 s y 30 km hay que verificarlo.
+    """
+    entradas = ev.get('analistas')
+    if not entradas:
+        return ''
+    partes = []
+    for e in entradas:
+        if e.get('dt_seg') is None:
+            continue
+        texto = '%s dt %.1fs' % (e['fuente'], e['dt_seg'])
+        if e.get('km') is not None:
+            texto += ' %.1fkm' % e['km']
+        if e.get('n_soluciones', 1) > 1:
+            texto += ' (%d soluciones)' % e['n_soluciones']
+        partes.append(texto)
+    return '; '.join(partes)
+
+
 def procesar_csv(archivo_csv, fuente, umbral=None, k_peso=None,
                  umbral_perp=None, margen_borde=None):
     """
@@ -76,6 +219,37 @@ def procesar_csv(archivo_csv, fuente, umbral=None, k_peso=None,
 
     eventos = []
     archivo_origen = os.path.basename(archivo_csv)
+
+    # Solo eventquery necesita atribución: las otras fuentes ya traen el
+    # analista en su propio CSV.
+    #
+    # Se avisa cuando falta ALGUNA fuente, no solo cuando faltan las dos. Con
+    # solo Seisan el panel igual abre y muestra el catálogo entero, así que un
+    # aviso único "no hay atribución" es justo el que no se va a ver en el caso
+    # más probable: hay una fuente y se cree que es suficiente. Nombrar la que
+    # falta es lo que permite notar que la mayoría de los eventos se quedan
+    # sin posible analista.
+    atribuciones = []
+    if fuente == 'eventquery':
+        faltantes = []
+        for nombre in ('seiscomp', 'seisan'):
+            indice = _cargar_atribucion(nombre)
+            if indice:
+                atribuciones.append(indice)
+            else:
+                faltantes.append(nombre)
+        if faltantes:
+            archivos = ', '.join('datos/atribucion_%s.csv' % n
+                                 for n in faltantes)
+            remedio = ('Use «Datos de SeisComp» para generar el catálogo de '
+                       'soluciones preferred y después «Datos de eventquery».'
+                       if 'seiscomp' in faltantes else
+                       'Use «Ejecutar análisis» para generar '
+                       'salida_collect.csv.')
+            print('[generajson] Aviso: sin atribución contra %s porque no '
+                  'está %s. Los eventos de eventquery se mostrarán sin '
+                  'posible analista. %s'
+                  % (', '.join(faltantes), archivos, remedio))
 
     # Progreso monotónico global: lectura 0-10%, asignación de perfiles 10-70%,
     # evaluación de sospechosos 70-100%.
@@ -100,11 +274,15 @@ def procesar_csv(archivo_csv, fuente, umbral=None, k_peso=None,
                 latitud = float(fila[2])
                 longitud = float(fila[3])
                 prof = fila[4]
-                prof_num = float(prof) if prof else None
             except (ValueError, IndexError):
                 continue
 
-            if fuente == "seisan":
+            # seisan y seiscomp comparten el formato de columnas (la 7 es el
+            # analista: el operador de la solución, en el caso de SeisComp), así
+            # que se leen igual. Lo que NO se hace es inventar un 'percibido':
+            # SeisComp no tiene esa noción, y la rama de eventquery la usa para
+            # pintar de otro color.
+            if fuente in ("seisan", "seiscomp"):
                 evento = {
                     'id': int(fila[0]) + 1,
                     'fecha hora': fila[1],
@@ -131,6 +309,26 @@ def procesar_csv(archivo_csv, fuente, umbral=None, k_peso=None,
             evento['n_fila_origen'] = int(fila[0])
             evento['lon'] = longitud
             evento['lat'] = latitud
+            if atribuciones:
+                # Se recorren TODOS los índices, no se corta en el primero:
+                # el pedido es mostrar ambas fuentes, y un evento puede tener
+                # solución SeisComp y también Seisan. Cada archivo trae una
+                # sola fuente, así que concatenar no puede duplicar nombres.
+                entradas = []
+                for indice in atribuciones:
+                    encontradas = _analistas_para_evento(indice, fila[1],
+                                                         latitud, longitud)
+                    if encontradas:
+                        entradas.extend(encontradas)
+                if entradas:
+                    evento['analistas'] = entradas
+                    nombres = []
+                    for e in entradas:
+                        for n in e['analistas']:
+                            if n not in nombres:
+                                nombres.append(n)
+                    evento['analistas_nombres'] = nombres
+                    evento['analista_ambiguo'] = len(nombres) > 1
             eventos.append(evento)
 
     # Asigna perfil a cada evento (incluye la profundidad en la métrica).
@@ -167,6 +365,8 @@ def procesar_csv(archivo_csv, fuente, umbral=None, k_peso=None,
         escritor.writerow(['id', 'fecha hora', 'latitud', 'longitud', 'prof',
                            'perfil', 'perp_km', 'residuo_km', 'dist_asoc',
                            'd_knn_km', 'vecinos_ventana', 'criterios',
+                           'posibles_analistas', 'analista_ambiguo',
+                           'calidad_cruce',
                            'archivo_origen', 'n_fila_origen'])
         for ev in eventos:
             if ev.get('sospechoso'):
@@ -189,9 +389,12 @@ def procesar_csv(archivo_csv, fuente, umbral=None, k_peso=None,
                                    ev.get('perp_km'), ev.get('residuo_km'),
                                    ev.get('dist_asoc'),
                                    m.get('d_knn_km'), m.get('vecinos_ventana'),
-                                   criterios,
-                                   ev.get('archivo_origen'),
-                                   ev.get('n_fila_origen')])
+                                    criterios,
+                                    _texto_posibles_analistas(ev),
+                                    'si' if ev.get('analista_ambiguo') else 'no',
+                                    _texto_calidad_cruce(ev),
+                                    ev.get('archivo_origen'),
+                                    ev.get('n_fila_origen')])
                 # Diagnóstico en consola: por qué se marcó cada sospechoso
                 #print("  [sospechoso] %s"
                 #      % sismicidad.explicar_sospechoso(ev))

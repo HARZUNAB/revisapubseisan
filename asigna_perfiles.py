@@ -19,6 +19,26 @@ Para cada evento y cada perfil se calcula:
                     el término de profundidad (residuo_km = None -> se usa 0).
     dist_asoc²    = dist_horiz_km² + (K_PESO_PROFUNDIDAD * residuo_km)²
 
+PRECONDICIÓN: LA PROFUNDIDAD DEL EVENTO TIENE QUE LLEGAR POSITIVA
+----------------------------------------------------------------
+El slab se guarda en profundidad ABSOLUTA (abs(z), ver _cargar_grilla), así
+que residuo_km = |prof - slab| solo significa "distancia al slab" si la
+profundidad del evento llega como magnitud positiva, en km y hacia abajo.
+
+Hoy todas las fuentes cumplen:
+  * SeisComp   -> m_depth_value viene positiva, en km.
+  * Seisan y eventquery -> positivas también, verificado sobre las 901 filas
+    de new_2_sep_2026_1_29.csv (todas entre 5.0 y 307.6 km, ninguna negativa).
+
+Si alguna vez una fuente entregara profundidad negativa, la resta se volvería
+suma (|-39.3 - 100| = 139.3 en vez de 60.7), dist_asoc se inflaría y tanto el
+umbral de asociación como los criterios de sismicidad se romperían sin que
+nada fallara visiblemente: el módulo seguiría devolviendo números, solo que
+todos sospechosos. Por eso asignar_eventos() cuenta las profundidades
+negativas y avisa por el log. Si aparece ese aviso, el problema está en el
+origen de los datos, no acá, y conviene no mirar los conteos hasta
+corregirlo.
+
 El evento se asigna al perfil de menor dist_asoc si dist_asoc <= UMBRAL.
 Si ningún perfil cumple ese umbral, se aplica un respaldo por COBERTURA del
 set de perfiles, de modo que el comportamiento no dependa de constantes
@@ -525,6 +545,14 @@ def asignar_eventos(eventos, umbral=UMBRAL_DIST_KM, k_peso=K_PESO_PROFUNDIDAD,
             grillas_dir))
     espaciado = _espaciado_mediano(perfiles)
 
+    # Cuenta profundidades negativas para avisar al final. Ver la nota de
+    # PRECONDICIÓN en el docstring: con profundidad negativa el residuo se
+    # convierte en suma y todos los eventos terminan pareciendo sospechosos,
+    # sin que nada falle. Acumular acá y avisar una vez evita inundar el log
+    # cuando el problema es de origen y afecta a todo el lote.
+    prof_negativos = 0
+    primero_negativo = None
+
     total_ev = len(eventos)
     for i, ev in enumerate(eventos):
         if on_avance:
@@ -537,6 +565,10 @@ def asignar_eventos(eventos, umbral=UMBRAL_DIST_KM, k_peso=K_PESO_PROFUNDIDAD,
                 prof = None
             else:
                 prof = float(prof)
+                if prof < 0:
+                    prof_negativos += 1
+                    if primero_negativo is None:
+                        primero_negativo = i
         except (TypeError, ValueError):
             lon = None
 
@@ -552,6 +584,15 @@ def asignar_eventos(eventos, umbral=UMBRAL_DIST_KM, k_peso=K_PESO_PROFUNDIDAD,
                                           margen_borde=margen_borde,
                                           espaciado=espaciado)
         ev.update(resultado)
+
+    if prof_negativos:
+        print("[asigna_perfiles] Aviso: {} de {} eventos llegaron con "
+              "profundidad negativa (el primero en el índice {}). El residuo "
+                "se calcula como suma y no como diferencia contra el slab, así "
+                "que dist_asoc queda inflado y el umbral de asociación puede "
+                "dejar de ser correcto. Revisá el origen de los datos "
+                "antes de confiar en los perfiles ni en los conteos de "
+                "sismicidad.".format(prof_negativos, total_ev, primero_negativo))
 
     return eventos
 

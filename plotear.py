@@ -1041,6 +1041,78 @@ def _texto_extencion(lon_min, lon_max, lat_min, lat_max):
             % (lon_min, lon_max, lat_min, lat_max, round(lon_km), round(lat_km)))
 
 
+_ETIQUETA_FUENTE = {'seiscomp': 'SeisComp', 'seisan': 'Seisan'}
+
+
+def _lineas_posible_analista(ev):
+    """
+    Renglones de la viñeta con el responsable PROBABLE del evento.
+
+    Hay dos casos muy distintos y no se pueden mezclar en uno solo. Cuando el
+    evento viene de Seisan o SeisComp, el analista es un dato: la fuente lo
+    trae en su propio CSV. Cuando viene de eventquery no hay ningún dato de
+    responsable, y lo que se muestra es una inferencia hecha cruzando por
+    tiempo y distancia el evento publicado con las soluciones locales. Por eso
+    acá se dice siempre "posible" y se acompaña el Δt y la distancia, que es lo
+    que permite juzgar si el cruce es creíble o una conjetura.
+
+    Si más de una fuente nombró a alguien, se listan las dos en vez de elegir
+    una: son dos sistemas independientes y el desacuerdo es información, no
+    ruido que haya que tapar.
+    """
+    entradas = ev.get('analistas')
+    if entradas:
+        nombres = []
+        for entrada in entradas:
+            for n in entrada.get('analistas') or ['(sin nombre)']:
+                if n not in nombres:
+                    nombres.append(n)
+        fuentes = [_ETIQUETA_FUENTE.get(e.get('fuente'), e.get('fuente', 'local'))
+                   for e in entradas]
+        # Todas las fuentes dicen lo mismo: alcanza con un renglón. Repetir
+        # "Jere" dos veces no informa nada y hace creer que hay un conflicto
+        # que en realidad no existe.
+        if len(nombres) == 1:
+            detalle = []
+            mejor = min((e for e in entradas if e.get('dt_seg') is not None),
+                        key=lambda e: e['dt_seg'], default=None)
+            if mejor is not None:
+                detalle.append("Δt %.1f s" % mejor['dt_seg'])
+                if mejor.get('km') is not None:
+                    detalle.append("%.1f km" % mejor['km'])
+            duplicadas = sum(e.get('n_soluciones', 1) for e in entradas)
+            if duplicadas > 1:
+                detalle.append("%d soluciones" % duplicadas)
+            detalle.insert(0, " + ".join(fuentes) if len(fuentes) > 1
+                           else fuentes[0])
+            if len(fuentes) > 1:
+                detalle.insert(1, "coinciden")
+            return ["posible analista: %s  (%s)" % (nombres[0],
+                                                    ', '.join(detalle))]
+        # Las fuentes discrepan: se listan todas en vez de elegir una, porque
+        # el desacuerdo es información sobre a quién hay que preguntarle.
+        lineas = ["posibles analistas: %s (las fuentes no coinciden)"
+                  % ', '.join(nombres)]
+        for entrada in entradas:
+            fuente = _ETIQUETA_FUENTE.get(entrada.get('fuente'),
+                                          entrada.get('fuente', 'local'))
+            detalle = []
+            if entrada.get('dt_seg') is not None:
+                detalle.append("Δt %.1f s" % entrada['dt_seg'])
+            if entrada.get('km') is not None:
+                detalle.append("%.1f km" % entrada['km'])
+            if entrada.get('n_soluciones', 1) > 1:
+                detalle.append("%d soluciones" % entrada['n_soluciones'])
+            sufijo = "  (%s)" % ', '.join(detalle) if detalle else ""
+            lineas.append("    %s: %s%s" % (fuente,
+                                            ', '.join(entrada['analistas']),
+                                            sufijo))
+        return lineas
+    if ev.get('analista'):
+        return ["analista: %s" % ev['analista']]
+    return []
+
+
 def _texto_parametros_evento(ev):
     """Texto multilínea con los parámetros del evento para la viñeta."""
     lineas = [
@@ -1052,8 +1124,7 @@ def _texto_parametros_evento(ev):
     ]
     if 'percibido' in ev:
         lineas.append("percibido: %s" % ev['percibido'])
-    if ev.get('analista'):
-        lineas.append("analista: %s" % ev['analista'])
+    lineas.extend(_lineas_posible_analista(ev))
     if ev.get('perfil') is not None:
         lineas.append("perfil: %s   along: %s km"
                       % (ev.get('perfil'), ev.get('along_km', '')))
@@ -1653,6 +1724,33 @@ def _layout_nacional(fig, ax, ax_txt, lon_min, lon_max, lat_min, lat_max,
                 fontsize=fs, fontweight='bold')
 
 
+def _aviso_analista_inferido(fig, eventos, fuente):
+    """
+    Aviso en la esquina superior derecha de la figura.
+
+    eventquery no informa quién procesó el evento: esa columna no existe en el
+    catálogo. El nombre que aparece en la viñeta sale de cruzar el evento
+    publicado con las soluciones locales por tiempo y distancia, así que es una
+    inferencia, no un dato. Sin este rótulo, un lector podría tomar "eatl" por
+    un hecho verificado cuando en realidad es el mejor cruce disponible.
+
+    Se dibuja solo en eventquery y solo si hay atribución en la figura: en un
+    panel chico el texto taparía puntos, y en las otras fuentes no hay nada que
+    advertir porque el analista es un dato, no una inferencia.
+    """
+    if fuente != "eventquery":
+        return
+    if not eventos:
+        return
+    if not any(ev.get('analistas') for ev in eventos):
+        return
+    fig.text(0.995, 0.938,
+             "posible analista = atribución por cruce (eventquery no informa "
+             "el responsable)",
+             ha='right', va='top', fontsize=6.5, style='italic',
+             color='#555555', zorder=30)
+
+
 def plotear_planta(eventos, fuente, perfil=None, n_asignados=None, totales=None,
                    territorio=None, bloquear=True, mostrar_json=True,
                    con_boton_detener=True):
@@ -1776,6 +1874,7 @@ def plotear_planta(eventos, fuente, perfil=None, n_asignados=None, totales=None,
                bbox_to_anchor=(0.5, 0.02),
                ncol=(2 if layout_nacional else len(handles_leyenda)),
                fontsize=8, frameon=True)
+    _aviso_analista_inferido(fig, eventos, fuente)
     if not layout_nacional:
         plt.tight_layout(rect=[0, 0.10, 1, 0.94])
     if con_boton_detener:

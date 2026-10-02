@@ -22,9 +22,22 @@ cada fila.
 Uso:
     ./exporta_ventana_seiscomp.py
     ./exporta_ventana_seiscomp.py <inicio> <fin> [salida.csv] [--base <nombre>]
+    ./exporta_ventana_seiscomp.py --sugerencia <inicio> <fin> [--reusar]
+    ./seiscomp.sh <catalogo.csv>
+
+La forma recomendada es el lanzador ./seiscomp.sh, que encadena la exportación
+con la revisión. Este script no depende de él: se puede usar solo, y la ventana
+que se le pase es la que sea.
 
 La ventana va en formato AAAAMMDDHHMMSS y corresponde a hora UTC. Si no se
-pasan los dos argumentos, se preguntan por pantalla con validación.
+pasan los dos argumentos, se preguntan por pantalla con validación. Con
+--sugerencia <inicio> <fin> esos valores aparecen ya escritos en la pregunta y
+se aceptan con Enter, pero igual se pueden cambiar: la sugerencia no obliga a
+exportar ese período ni lo restringe, la ventana sigue siendo libre.
+
+Con --reusar, si los dos archivos de esa ventana ya existen y la exportación
+anterior terminó bien, no se consulta la base y se devuelven los archivos que
+ya están. Ver REEXPORTAR ABAJO para qué hace falta la marca de fin.
 
 BASES DE DATOS
 
@@ -45,6 +58,21 @@ pisar con NEWPT_DB_HOST, NEWPT_DB_DATABASE, NEWPT_DB_USER y
 NEWPT_DB_PASSWORD. Si no se encuentra ninguna de esas fuentes, el script se
 detiene y avisa en vez de conectarse a una base cualquiera. Si la base elegida
 no cubre la ventana pedida, lo avisa antes de exportar.
+
+REEXPORTAR
+
+Con --reusar se busca no volver a pegarle a la base cuando la ventana pedida ya
+se exportó. Para saber si se puede, no alcanza con que los dos CSV existan: una
+exportación que se cortó a mitad de camino deja el archivo de fases a medias y
+se vería como una ventana más corta, sin ningún aviso. Por eso, al terminar
+bien, se escribe una tercera archivo al lado:
+
+    <salida>.csv.completo
+
+que es la marca de que aquella exportación llegó hasta el final. --reusar solo
+reutiliza los CSV si la marca está; si no está, los vuelve a exportar. La marca
+se borra al empezar una exportación y se vuelve a escribir al terminarla, así
+que un intento fallido nunca deja decir que algo se completó cuando no.
 
 Este script es de SOLO LECTURA: no modifica la base de datos bajo ninguna
 circunstancia. Lo único que envía al servidor es "SET TIME ZONE 'UTC'" (un
@@ -69,6 +97,14 @@ except ImportError:
 FORMATO = "%Y%m%d%H%M%S"
 TIMEOUT_CONEXION = 10
 
+# Cuántas filas de fase se traen por vez desde el servidor. Es el tamaño del
+# lote de escritura: con esto la memoria no depende del tamaño de la ventana.
+TAMANO_LOTE = 5000
+
+# A partir de cuántas filas de fase la exportación avisa que va a tardar. No
+# corta nada, solo informa: el que decide es el que la lanzó.
+AVISO_DE_LOTES = 200000
+
 # Rango en el que una magnitud de estación es creíble. Medido sobre la base real
 # en la ventana de septiembre 2026: el mínimo fue -1.438 y el máximo 10.330, con
 # 3 valores bajo -1 y 4 sobre 10 de 169.130. Salirse de acá es un cálculo roto.
@@ -87,6 +123,13 @@ CABECERA = [
 # Anclada al evento y unida a su solución preferida: evento -> origen preferido
 # y evento -> magnitud preferida. Los INNER JOIN del origen dejan fuera los
 # eventos que todavía no tienen solución preferida confirmada.
+#
+# Los decimales del SELECT son la convención con la que se tratan estos datos en
+# todo el flujo, la misma con la que los traen Seisan y eventquery: coordenadas
+# con tres decimales (~111 m) y profundidad y magnitud con uno. Sin redondear, la
+# base devuelve la latitud con toda su precisión (valores como
+# -26.155641555786133) y ese número es el que después se compara, se copia y se
+# dibuja en todas partes.
 CONSULTA_SQL = """
 SELECT
     TRIM(po_e.m_publicid::text) AS id_evento,
@@ -96,8 +139,8 @@ SELECT
     o.m_quality_usedphasecount AS fases,
     ROUND(o.m_quality_standarderror::numeric, 2) AS rms,
     ROUND(o.m_quality_azimuthalgap::numeric, 0) AS azgap,
-    o.m_latitude_value AS latitud,
-    o.m_longitude_value AS longitud,
+    ROUND(o.m_latitude_value::numeric, 3) AS latitud,
+    ROUND(o.m_longitude_value::numeric, 3) AS longitud,
     ROUND(o.m_depth_value::numeric, 1) AS profundidad_km,
     o.m_creationinfo_agencyid AS agencia,
     o.m_creationinfo_author AS operador,
@@ -113,6 +156,7 @@ LEFT JOIN eventdescription ed ON ed._parent_oid = e._oid
                              AND ed.m_type = 'region name'
 WHERE o.m_time_value >= %s
   AND o.m_time_value <= %s
+  AND (%s::text IS NULL OR o.m_evaluationStatus = %s::text)
 ORDER BY o.m_time_value;
 """
 
@@ -294,6 +338,7 @@ LEFT JOIN stationmagnitudecontribution smc
       AND smc.m_stationMagnitudeID = sm.smid
 WHERE o.m_time_value >= %s
   AND o.m_time_value <= %s
+  AND (%s::text IS NULL OR o.m_evaluationStatus = %s::text)
 ORDER BY o.m_time_value, p.m_waveformID_stationCode, a.m_azimuth NULLS LAST;
 """
 
@@ -302,18 +347,33 @@ ORDER BY o.m_time_value, p.m_waveformID_stationCode, a.m_azimuth NULLS LAST;
 # ---------------------------------------------------------------------------
 # Configuración y conexión
 # ---------------------------------------------------------------------------
-def ruta_datos():
+def ruta_datos(nombre="prueba.csv"):
     """
-    Resuelve el directorio donde se escribe el CSV.
-    Prioridad: variable de entorno NEWPT_DATA_DIR (definida por newpt.sh),
-    luego el directorio del binario (PyInstaller) o el del script.
+    Resuelve dónde se escribe un archivo de salida.
+
+    Todo cae dentro del directorio desde donde se ejecuta el script, usando el
+    módulo rutas.py, que es la fuente única de verdad del proyecto para organizar
+    lo que genera el flujo de revisión: los datos van a ./datos/, que se crea
+    sola si no está.
+
+    NEWPT_DATA_DIR gana sobre todo, por si algún día corre desde un cron o desde
+    otro proyecto que fije el destino. Y si rutas no se puede importar, porque
+    este script se copió solo a otra carpeta, se avisa y se sigue escribiendo en
+    el directorio del propio script, que es lo que se hacía antes.
     """
     env = os.environ.get("NEWPT_DATA_DIR")
     if env:
-        return env
-    if getattr(sys, 'frozen', False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__))
+        return os.path.join(env, nombre)
+
+    try:
+        import rutas
+        return rutas.p_datos(nombre)
+    except ImportError:
+        print("   [Aviso] No se encontró rutas.py; los archivos van junto a este"
+              " script en vez de ./datos/.")
+        if getattr(sys, "frozen", False):
+            return os.path.join(os.path.dirname(sys.executable), nombre)
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), nombre)
 
 
 class FaltanParametros(Exception):
@@ -472,16 +532,28 @@ def _medir(etapa, extra=None):
 # ---------------------------------------------------------------------------
 # Interfaz de usuario
 # ---------------------------------------------------------------------------
-def _pedir(mensaje, ejemplo):
-    """Pide un instante en formato AAAAMMDDHHMMSS, repreguntando si no es válido."""
+def _pedir(mensaje, ejemplo, defecto=None):
+    """
+    Pide un instante en formato AAAAMMDDHHMMSS, repreguntando si no es válido.
+
+    Con 'defecto' no, un valor propuesto: si la respuesta viene vacía se
+    devuelve ese en vez de dar el error de "no puede estar vacío", y el mensaje
+    lo muestra al lado de la pregunta. El defecto es solo una sugerencia de
+    atajo, no una validación más floja: lo que se escriba se revisa igual.
+    """
+    pista = ""
+    if defecto is not None:
+        pista = "  ·  Enter = %s" % defecto.strftime(FORMATO)
     while True:
         try:
-            texto = input(mensaje.format(ejemplo=ejemplo)).strip()
+            texto = input(mensaje.format(ejemplo=ejemplo, defecto=pista)).strip()
         except (KeyboardInterrupt, EOFError):
             print("\n\n[-] Operación cancelada por el usuario.")
             sys.exit(1)
 
         if not texto:
+            if defecto is not None:
+                return defecto
             print("   Error: El valor no puede estar vacío.")
             continue
         if not re.match(r"^\d{14}$", texto):
@@ -493,17 +565,25 @@ def _pedir(mensaje, ejemplo):
             print("   Error: Fecha o hora inválida (ej. mes 13 o día 32).")
 
 
-def _preguntar_ventana():
-    """Pide inicio y término, y repregunta si el término no es posterior."""
+def _preguntar_ventana(sugerencia=None):
+    """
+    Pide inicio y término, y repregunta si el término no es posterior.
+
+    'sugerencia' es una tupla (inicio, fin) que aparece escrita en las
+    preguntas: se acepta con Enter y se puede cambiar. Cuando no hay sugerencia
+    se pregunta igual, porque la ventana que se exporta es libre y no tiene por
+    qué ser la de ningún otro archivo.
+    """
+    inicio_defecto, fin_defecto = sugerencia if sugerencia else (None, None)
     print("\n" + "=" * 70)
     print("           VENTANA DE TIEMPO A EXPORTAR DESDE SEISCOMP6")
     print("=" * 70)
     print("Formato: AAAAMMDDHHMMSS, en hora UTC. Ventana con extremos incluidos.\n")
     while True:
-        inicio = _pedir("   Fecha y hora de INICIO   (Ej: {ejemplo}): ",
-                        "20260901000000")
-        fin = _pedir("   Fecha y hora de TÉRMINO  (Ej: {ejemplo}): ",
-                     "20260930235959")
+        inicio = _pedir("   Fecha y hora de INICIO   (Ej: {ejemplo}){defecto}: ",
+                        "20260901000000", inicio_defecto)
+        fin = _pedir("   Fecha y hora de TÉRMINO  (Ej: {ejemplo}){defecto}: ",
+                     "20260930235959", fin_defecto)
         if fin > inicio:
             return inicio, fin
         print("\n   [X] El TÉRMINO debe ser posterior al INICIO.")
@@ -544,12 +624,21 @@ def _verificar_columnas(filas, cabecera=None, etiqueta="El SELECT"):
         print("           no declaradas: %s" % ", ".join(sorted(recibidas - esperadas)))
 
 
-def _escribir_csv(ruta, filas, cabecera=None):
+def _escribir_csv(ruta, filas, cabecera=None, append=False):
+    """
+    Escribe las filas en un CSV.
+
+    Con append=True agrega al final y NO repite la cabecera. Es lo que permite
+    volcar las fases por lotes: la cabecera se escribe una vez con el primer
+    lote y el resto se van pegando.
+    """
     if cabecera is None:
         cabecera = CABECERA
-    with open(ruta, "w", encoding="utf-8", newline="") as f:
+    modo = "a" if append else "w"
+    with open(ruta, modo, encoding="utf-8", newline="") as f:
         escritor = csv.writer(f)
-        escritor.writerow(cabecera)
+        if not append:
+            escritor.writerow(cabecera)
         for fila in filas:
             escritor.writerow([_celda(fila.get(columna)) for columna in cabecera])
 
@@ -558,6 +647,32 @@ def _ruta_fases(salida_eventos):
     """Deriva el nombre del CSV de fases a partir del de eventos."""
     base, extension = os.path.splitext(salida_eventos)
     return "%s_fases%s" % (base, extension or ".csv")
+
+
+def _ruta_completo(salida_eventos):
+    """
+    Nombre de la marca que dice que aquella exportación terminó.
+
+    Va pegada al nombre del CSV de eventos y no al del de fases, porque es la
+    salida que define a la exportación: es la que se le pasa al revisor, y la
+    que el lanzador usa para decidir si hay algo que reusar.
+    """
+    return "%s.completo" % salida_eventos
+
+
+def _escribir_marca(ruta, inicio, fin, eventos, fases, bases):
+    """
+    Deja escrito que la exportación de esa ventana llegó hasta el final.
+
+    Va con la cantidad de filas y con las bases consultadas porque, cuando más
+    adelante alguien mire la carpeta, el archivo solo no dice si esos datos
+    corresponden a lo que el catálogo pedía o a otra ventana.
+    """
+    with open(ruta, "w", encoding="utf-8") as f:
+        f.write("ventana %s %s | eventos %d | fases %d | bases %s | %s UTC\n"
+                % (inicio.strftime(FORMATO), fin.strftime(FORMATO),
+                   eventos, fases, ",".join(bases),
+                   datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")))
 
 
 def _resumen_fases(filas_fases):
@@ -593,11 +708,90 @@ def _resumen_fases(filas_fases):
     }
 
 
+def _acumular_por_evento(mapa, filas):
+    """
+    Va juntando los conteos de las fases, agrupados por evento.
+
+    Hace falta porque las fases ya no se guardan todas en memoria: se escriben
+    por lotes. Lo único que se retiene es un resumen chico por evento, decenas
+    de miles de entradas mínimas, en vez de un millón de filas completas.
+    """
+    for f in filas:
+        clave = f.get("id_evento")
+        evento = mapa.get(clave)
+        if evento is None:
+            evento = {"fases": 0, "usadas": 0, "con_magnitud": 0,
+                      "con_residuo": 0, "negativas": 0, "fuera_de_rango": 0,
+                      "estaciones": set(), "magnitudes": [], "con_suma": 0.0}
+            mapa[clave] = evento
+        evento["fases"] += 1
+        if str(f.get("usada", "")).strip().lower() == "true":
+            evento["usadas"] += 1
+        evento["estaciones"].add((f.get("red", ""), f.get("estacion", "")))
+        if str(f.get("tiene_magnitud", "")).strip() != "Si":
+            continue
+        evento["con_magnitud"] += 1
+        # Ojo con esto: str(None) es "None", no una cadena vacía, así que hay
+        # que mirar el valor antes de convertirlo o se contarían como presentes
+        # los residuos que la base tiene en NULL.
+        if f.get("mag_est_residuo") not in (None, ""):
+            evento["con_residuo"] += 1
+        valor = f.get("mag_estacion")
+        if valor in (None, ""):
+            continue
+        try:
+            valor = float(valor)
+        except (TypeError, ValueError):
+            continue
+        evento["magnitudes"].append(valor)
+        evento["con_suma"] += valor
+        if valor < 0:
+            evento["negativas"] += 1
+        if not RANGO_MAG_ESTACION[0] <= valor <= RANGO_MAG_ESTACION[1]:
+            evento["fuera_de_rango"] += 1
+
+
+def _resumen_desde_mapa(mapa):
+    """Junta los conteos por evento en el resumen que se muestra al final."""
+    total = {"con_magnitud": 0, "con_residuo": 0, "negativas": 0,
+             "fuera_de_rango": 0, "usadas": 0, "fases": 0, "estaciones": 0,
+             "con_suma": 0.0, "cuantas_magnitudes": 0, "eventos": len(mapa)}
+    for evento in mapa.values():
+        total["fases"] += evento["fases"]
+        total["usadas"] += evento["usadas"]
+        total["con_magnitud"] += evento["con_magnitud"]
+        total["con_residuo"] += evento["con_residuo"]
+        total["negativas"] += evento["negativas"]
+        total["fuera_de_rango"] += evento["fuera_de_rango"]
+        total["estaciones"] += len(evento["estaciones"])
+        total["con_suma"] += evento["con_suma"]
+        total["cuantas_magnitudes"] += len(evento["magnitudes"])
+    total["sin_magnitud"] = total["fases"] - total["con_magnitud"]
+    total["no_usadas"] = total["fases"] - total["usadas"]
+    total["mag_promedio"] = (total["con_suma"] / total["cuantas_magnitudes"]
+                             if total["cuantas_magnitudes"] else None)
+    return total
+
+
 CONSULTA_COBERTURA_SQL = """
 SELECT min(o.m_time_value) AS desde, max(o.m_time_value) AS hasta
 FROM event e
 INNER JOIN publicobject po ON po.m_publicid = e.m_preferredoriginid
 INNER JOIN origin o ON o._oid = po._oid
+"""
+
+# Cuenta rápida de lo que la ventana va a producir, para avisar antes de
+# exportar y no dejar esperando veinte minutos sin saber a qué atenerse.
+# Cuenta llegadas de TODOS los orígenes de la ventana, no solo de los que son
+# origen preferido de algún evento, así que es un piso y no un exacto: sale
+# barata porque no necesita pasar por event ni por publicobject.
+CONSULTA_TAMANO_SQL = """
+SELECT count(*) AS llegadas, count(DISTINCT o._oid) AS origenes
+FROM origin o
+INNER JOIN arrival a ON a._parent_oid = o._oid
+WHERE o.m_time_value >= %s
+  AND o.m_time_value <= %s
+  AND (%s::text IS NULL OR o.m_evaluationStatus = %s::text)
 """
 
 
@@ -654,16 +848,26 @@ def _bases_seiscomp():
         conn.close()
 
 
-def _consultar_base(base, inicio, fin):
+def _parametros_estatus(solo_confirmados):
     """
-    Corre las dos consultas contra una base y devuelve sus filas.
-    Devuelve (filas_eventos, filas_fases, cobertura) donde cobertura es el
-    (mínimo, máximo) de la ventana de la base, o None si no se pudo calcular.
+    Los dos valores del filtro de estatus, para las consultas.
+
+    Se pasa el estado dos veces porque el filtro está escrito como
+    "(%s::text IS NULL OR columna = %s::text)": con NULL no se filtra nada, y
+    con 'confirmed' quedan solo los revisados por un analista. Medido en la base
+    real, los eventos automáticos de la ventana tenían el estado vacío, así que
+    este filtro solo ya saca las soluciones automáticas.
+    """
+    estado = "confirmed" if solo_confirmados else None
+    return (estado, estado)
+
+
+def _consultar_eventos_de_base(base, inicio, fin, solo_confirmados):
+    """
+    Trae los eventos de una base. Son pocos (decenas de miles como máximo), así
+    que acá no hace falta ir por lotes.
     """
     config = configuracion(base)
-    filas = []
-    filas_fases = []
-    cobertura = None
     conn = conectar(config)
     try:
         _medir("conexion_fin", "host=%s base=%s" % (config["host"], base))
@@ -671,16 +875,72 @@ def _consultar_base(base, inicio, fin):
         cursor.execute("SET TIME ZONE 'UTC'")
         cursor.execute(CONSULTA_COBERTURA_SQL)
         cobertura = cursor.fetchone()
-
-        cursor.execute(CONSULTA_SQL, (inicio, fin))
+        cursor.execute(CONSULTA_SQL,
+                       (inicio, fin) + _parametros_estatus(solo_confirmados))
         filas = cursor.fetchall()
         _medir("query_fin", "base=%s" % base)
-
-        cursor.execute(CONSULTA_FASES_SQL, (inicio, fin))
-        filas_fases = cursor.fetchall()
+        # La estimación sale en la misma conexión para no abrir otra.
+        cursor.execute(CONSULTA_TAMANO_SQL,
+                       (inicio, fin) + _parametros_estatus(solo_confirmados))
+        estimadas = (cursor.fetchone() or {}).get("llegadas", 0)
     finally:
         conn.close()
-    return filas, filas_fases, cobertura
+    return filas, cobertura, estimadas
+
+
+def _escribir_fases_de_base(base, inicio, fin, solo_confirmados, dueno,
+                            ruta_fases, resumen_por_evento):
+    """
+    Escribe las fases de UNA base, y solo de los eventos que le tocan, yendo por
+    lotes con un cursor de servidor.
+
+    Esto es lo que mantiene acotada la memoria: con fetchall, una ventana
+    grande necesita tener todas las filas vivas antes de escribir nada, y se
+    midió que el histórico completo ocupaba 5,6 GB. Con un cursor de servidor
+    el resultado se va trayendo de a porciones y la memoria queda plana.
+
+    'dueno' dice qué base manda en cada evento, según la más reciente. Así cada
+    evento escribe sus fases una sola vez y de una sola base, sin necesidad de
+    tener los resultados de las dos bases en memoria al mismo tiempo.
+
+    El archivo ya viene con su encabezado escrito: esta función solo agrega.
+    """
+    config = configuracion(base)
+    total = 0
+    from psycopg2.extras import RealDictCursor
+    conn = conectar(config)
+    try:
+        cursor = crear_cursor(conn)
+        cursor.execute("SET TIME ZONE 'UTC'")
+        # itersize no alcanza con un cursor normal: libpq igual trae el
+        # resultado entero. El cursor con nombre lo deja en el servidor.
+        cursor = conn.cursor(name="fases", cursor_factory=RealDictCursor,
+                             withhold=False)
+        cursor.itersize = TAMANO_LOTE
+        cursor.execute(CONSULTA_FASES_SQL,
+                       (inicio, fin) + _parametros_estatus(solo_confirmados))
+        while True:
+            lote = cursor.fetchmany(TAMANO_LOTE)
+            if not lote:
+                break
+            filas = []
+            for fila in lote:
+                if dueno.get(fila.get("id_evento")) != base:
+                    continue
+                fila = dict(fila)
+                fila["base_datos"] = base
+                filas.append(fila)
+            if filas:
+                _escribir_csv(ruta_fases, filas, CABECERA_FASES, append=True)
+                total += len(filas)
+                # El resumen se acumula por evento, así que no hace falta
+                # guardar las filas: al final solo quedan los conteos.
+                _acumular_por_evento(resumen_por_evento, filas)
+        cursor.close()
+        _medir("fases_fin", "base=%s" % base)
+    finally:
+        conn.close()
+    return total
 
 
 def _prioridad_por_base(coberturas):
@@ -782,22 +1042,52 @@ def _aviso_cobertura(nombre, inicio, fin, cobertura):
               % (nombre, primero.date(), ultimo.date()))
 
 
-def exportar_ventana(inicio, fin, salida=None, base=None):
+def exportar_ventana(inicio, fin, salida=None, base=None,
+                     solo_confirmados=True, reusar=False):
     """
     Consulta los eventos de la ventana y sus fases, y escribe los dos CSV.
     Devuelve un diccionario con las rutas y las cantidades de filas.
+
+    Por defecto sale solo lo que un analista revisó (estado "confirmed"). Con
+    solo_confirmados=False entran también las soluciones automáticas, que son
+    muchas más pero no son eventos publicados.
+
+    Con reusar=True, si esa ventana ya está exportada y completa, devuelve sus
+    archivos sin consultar la base. El resultado trae "reusado": True y las
+    cantidades en None, porque las filas no se contaron otra vez.
     """
     if med is not None:
         # Se arranca el cronómetro acá para incluir el import de psycopg2.
         med.arranque("consulta")
 
     if salida is None:
-        salida = os.path.join(
-            ruta_datos(),
-            "seiscomp_%s_%s.csv" % (inicio.strftime(FORMATO),
-                                    fin.strftime(FORMATO)),
-        )
+        salida = ruta_datos("seiscomp_%s_%s.csv"
+                            % (inicio.strftime(FORMATO), fin.strftime(FORMATO)))
     salida_fases = _ruta_fases(salida)
+    marca = _ruta_completo(salida)
+
+    if reusar and os.path.isfile(salida) and os.path.isfile(salida_fases) \
+            and os.path.isfile(marca):
+        print("   Ventana       : %s  ->  %s  (UTC)"
+              % (inicio.strftime(FORMATO), fin.strftime(FORMATO)))
+        print("   [Aviso] Se reusa la exportación existente; no se consulta"
+              " la base.")
+        return {
+            "ruta": os.path.abspath(salida),
+            "ruta_fases": os.path.abspath(salida_fases),
+            "eventos": None,
+            "fases": None,
+            "reusado": True,
+        }
+
+    # Se borra la marca ANTES de exportar. Si esta corrida se corta, el archivo
+    # puede quedar a medias y lo que no puede pasar es que la marca siga
+    # diciendo que está completo: --reusar se llevaría la exportación
+    # truncada como si fuera entera.
+    try:
+        os.remove(marca)
+    except OSError:
+        pass
 
     bases = _bases_a_consultar(base)
 
@@ -812,16 +1102,17 @@ def exportar_ventana(inicio, fin, salida=None, base=None):
         print("   Definida en   : %s" % config["_origen"])
 
     eventos_por_base = {}
-    fases_por_base = {}
     coberturas = {}
+    estimacion = {}
     for nombre in bases:
         print("   Consultando %s..." % nombre)
-        filas, filas_fases, cobertura = _consultar_base(nombre, inicio, fin)
+        filas, cobertura, estimadas = _consultar_eventos_de_base(
+            nombre, inicio, fin, solo_confirmados)
         _aviso_cobertura(nombre, inicio, fin, cobertura)
         eventos_por_base[nombre] = filas
-        fases_por_base[nombre] = filas_fases
         coberturas[nombre] = cobertura
-        print("      %d eventos, %d fases." % (len(filas), len(filas_fases)))
+        estimacion[nombre] = estimadas
+        print("      %d eventos." % len(filas))
 
     # La base que llega más lejos en el tiempo es la que recibe datos, y es la
     # que gana cuando un evento está en más de una.
@@ -830,31 +1121,61 @@ def exportar_ventana(inicio, fin, salida=None, base=None):
         ganadora = max(bases, key=lambda b: prioridad.get(b, 0))
         print("   Ante un evento presente en varias, manda: %s" % ganadora)
 
+     # Quién se queda con cada evento. Con esto cada base escribe después solo
+    # las fases de los eventos que le tocan, sin tener que guardar los
+    # resultados de las dos al mismo tiempo.
+    dueno = {}
+    for nombre in sorted(bases, key=lambda b: prioridad.get(b, 0)):
+        for fila in eventos_por_base[nombre]:
+            dueno[fila["id_evento"]] = nombre
+
+    # Estimación previa: más vale saberlo antes de esperar que después.
+    estimado = sum(estimacion.values())
+    print("   A exportar    : ~%s llegadas de estación%s"
+          % ("{:,}".format(estimado).replace(",", "."),
+             "" if solo_confirmados else " (sin filtrar por estado)"))
+    if estimado > AVISO_DE_LOTES:
+        print("   [Aviso] Es una ventana grande: puede tardar. Se escribe por"
+              " lotes, así que la memoria se mantiene acotada.")
+
     filas = _fusionar_eventos(eventos_por_base, prioridad)
-    filas_fases = _fusionar_fases(fases_por_base, prioridad)
-    # El SELECT de la base no trae base_datos: se agrega al fusionar, y en el
-    # caso de una sola base también, para que la columna nunca quede vacía.
     for fila in filas:
         fila.setdefault("base_datos", "")
-    for fila in filas_fases:
-        fila.setdefault("base_datos", "")
-
     _verificar_columnas(filas)
     _escribir_csv(salida, filas)
-    _verificar_columnas(filas_fases, CABECERA_FASES, "El SELECT de fases")
-    _escribir_csv(salida_fases, filas_fases, CABECERA_FASES)
+
+    # Las fases van por lotes. Lo único que se retiene es el resumen por evento.
+    # El archivo se crea acá, con su encabezado, y después todas las bases
+    # agregan. Si se esperara al primer lote para escribirlo, y la primera base
+    # no trajera nada, el archivo quedaría con lo de una corrida anterior.
+    _escribir_csv(salida_fases, [], CABECERA_FASES)
+    resumen_por_evento = {}
+    total_fases = 0
+    for nombre in bases:
+        print("   Escribiendo fases de %s..." % nombre)
+        total = _escribir_fases_de_base(
+            nombre, inicio, fin, solo_confirmados, dueno, salida_fases,
+            resumen_por_evento)
+        print("      %d llegadas." % total)
+        total_fases += total
     _medir("escritura_fin")
 
-    resumen = _resumen_fases(filas_fases)
+    resumen = _resumen_desde_mapa(resumen_por_evento)
+
+    # La marca va al final, después de escribir las fases: es lo último que se
+    # hace, y es lo que dice que no quedó nada a medias.
+    _escribir_marca(marca, inicio, fin, len(filas), total_fases, bases)
 
     return {
         "ruta": os.path.abspath(salida),
         "eventos": len(filas),
         "ruta_fases": os.path.abspath(salida_fases),
-        "fases": len(filas_fases),
+        "fases": total_fases,
         "resumen_fases": resumen,
         "bases": bases,
         "eventos_por_base": {b: len(eventos_por_base.get(b, [])) for b in bases},
+        "estimado": estimado,
+        "reusado": False,
     }
 
 
@@ -865,7 +1186,7 @@ def exportar_ventana(inicio, fin, salida=None, base=None):
 def main():
     argumentos = sys.argv[1:]
 
-    if argumentos and argumentos[0] in ("-h", "--help"):
+    if argumentos and argumentos[0] in ("-h", "--help", "--ayuda"):
         print(__doc__)
         return 0
 
@@ -874,6 +1195,9 @@ def main():
     # grande tiene el histórico y la chica el tiempo real, y usar una sola deja
     # huecos en silencio.
     base = "todas"
+    solo_confirmados = True
+    sugerencia = None
+    reusar = False
     resto = []
     i = 0
     while i < len(argumentos):
@@ -883,6 +1207,37 @@ def main():
                 return 2
             base = argumentos[i + 1]
             i += 2
+            continue
+        if argumentos[i] == "--todos":
+            # Saca también las soluciones automáticas, que no son eventos
+            # revisados por un analista. Son muchas más filas.
+            solo_confirmados = False
+            i += 1
+            continue
+        if argumentos[i] == "--sugerencia":
+            # Un período cualquiera para dejar escrito en la pregunta. No obliga
+            # a exportar esa ventana: la pregunta sigue abierta y se puede
+            # escribir otra.
+            if i + 2 >= len(argumentos):
+                print("[X] --sugerencia necesita inicio y término"
+                      " (AAAAMMDDHHMMSS).")
+                return 2
+            try:
+                desde = datetime.strptime(argumentos[i + 1], FORMATO)
+                hasta = datetime.strptime(argumentos[i + 2], FORMATO)
+            except ValueError:
+                print("[X] La sugerencia debe ir en formato AAAAMMDDHHMMSS.")
+                return 2
+            if hasta <= desde:
+                print("[X] El término de la sugerencia debe ser posterior"
+                      " al inicio.")
+                return 2
+            sugerencia = (desde, hasta)
+            i += 3
+            continue
+        if argumentos[i] == "--reusar":
+            reusar = True
+            i += 1
             continue
         resto.append(argumentos[i])
         i += 1
@@ -901,23 +1256,37 @@ def main():
             return 2
         if len(argumentos) > 2:
             salida = argumentos[2]
+        if sugerencia:
+            # Ganó la ventana escrita: es la que se exporta. Se dice, para que
+            # no parezca que la sugerencia se aplicó igual.
+            print("[Aviso] Hay ventana escrita y sugerencia; se usa la"
+                  " escrita (%s - %s)." % (inicio.strftime(FORMATO),
+                                          fin.strftime(FORMATO)))
     elif argumentos:
         print("[X] Indique inicio y término, o ninguno para que se los pregunte.")
         print("    Uso: %s [<inicio> <fin> [salida.csv]] [--base <nombre>]"
+              " [--sugerencia <inicio> <fin>] [--reusar]"
               % os.path.basename(__file__))
         return 2
     else:
-        inicio, fin = _preguntar_ventana()
+        inicio, fin = _preguntar_ventana(sugerencia)
 
     print()
     try:
-        resultado = exportar_ventana(inicio, fin, salida, base)
+        resultado = exportar_ventana(inicio, fin, salida, base,
+                                    solo_confirmados, reusar)
     except FaltanParametros as e:
         print("[X] %s" % e)
         return 2
     except Exception as e:
         print("[X] Error al exportar los eventos: %s" % e)
         return 1
+
+    if resultado.get("reusado"):
+        print("[OK] Exportación existente reutilizada.")
+        print("     Archivo: %s" % resultado["ruta"])
+        print("     Archivo: %s" % resultado["ruta_fases"])
+        return 0
 
     total = resultado["eventos"]
     total_fases = resultado["fases"]
