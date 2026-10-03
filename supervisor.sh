@@ -7,6 +7,14 @@
 #   - Luego ejecuta app.py con el entorno activado.
 #
 # Uso:
+#   ./supervisor.sh
+#
+# Sin parámetros abre la ventana de solicitud de catálogos (Seisan y
+# eventquery desde el servidor remoto, más la ventana de SeisComp) y, al
+# terminar, la ventana principal de revisión. Luego se pulsa «Ejecutar
+# análisis» cuando se quiera procesar.
+#
+# El modo antiguo sigue disponible para trabajos puntuales:
 #   ./supervisor.sh <archivo_entrada.csv> <archivo_salida.dat>
 #
 # Las salidas se organizan por contenido en el directorio de ejecución
@@ -40,4 +48,9 @@ if [ ! -d "$VENV" ]; then
     fi
 fi
 
-exec "$VENV/bin/python" "$DIR/app.py" "$@"
+# Con argumentos se conserva el modo antiguo (catálogo explícito); sin
+# argumentos se pide la ventana y se bajan los tres catálogos.
+if [ "$#" -gt 0 ]; then
+    exec "$VENV/bin/python" "$DIR/app.py" "$@"
+fi
+exec "$VENV/bin/python" "$DIR/solicita_catalogos.py"

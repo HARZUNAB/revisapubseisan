@@ -8,6 +8,37 @@ from os import remove
 import rutas
 import prog
 
+
+def _parsear_tiempo(texto):
+    """
+    Interpreta el instante de un evento de eventquery.
+
+    Acepta el export viejo ('2026-08-01T01:36:26Z') y el actual
+    ('2026-09-04 23:58:48.654902-04:00', con espacio, microsegundos y offset).
+    Devuelve UTC naive y sin microsegundos: es la semántica del 'Z' viejo, que
+    es la que cruza con las horas UTC de select.out.
+    """
+    limpio = (texto or "").strip().replace("Z", "+00:00")
+    try:
+        fecha = datetime.datetime.fromisoformat(limpio)
+    except ValueError:
+        fecha = None
+        for fmt in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z",
+                    "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S",
+                    "%Y-%m-%d %H:%M:%S.%f%z", "%Y-%m-%d %H:%M:%S%z",
+                    "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+            try:
+                fecha = datetime.datetime.strptime(limpio, fmt)
+                break
+            except ValueError:
+                continue
+        if fecha is None:
+            raise ValueError("No se reconoce la fecha: %r" % texto)
+    if fecha.tzinfo is not None:
+        fecha = fecha.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+    return fecha.replace(microsecond=0)
+
+
 csv_file = open(sys.argv[1])
 #fh = open(sys.argv[2],"w", encoding='utf-8')
 fh = open(sys.argv[2],"w")
@@ -71,7 +102,7 @@ if num_datos>0:
 		
 		# Extraemos la fecha de la posición 0 de la lista de datos
 		fecha_original = datos_sismo[0]
-		fecha = datetime.datetime.strptime(fecha_original.replace('Z', ''), '%Y-%m-%dT%H:%M:%S')
+		fecha = _parsear_tiempo(fecha_original)
 		fecha2 = fecha.strftime("%Y %m %d %H %M %S")
 		
 		# Extraemos los demás datos por su posición en la lista

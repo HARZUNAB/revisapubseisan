@@ -2137,21 +2137,19 @@ def _panel_analisis(grupos, perfiles_por_id, sin_perfil, fuente,
         except Exception:
             pass
         if embebido:
-            # Limpia el área del panel; la aplicación sigue viva.
-            try:
-                for w in list(panel.winfo_children()):
-                    w.destroy()
-            except Exception:
-                pass
-        else:
-            try:
-                panel.destroy()
-            except Exception:
-                pass
-            try:
-                raiz.quit()
-            except Exception:
-                pass
+            # Ya no hay ninguna vía para llegar acá con un panel embebido (el
+            # botón «Cerrar panel» se quitó). Se corta en vez de seguir por el
+            # cierre de abajo, que destruiría el frame: es una pestaña de la
+            # aplicación principal y quedaría muda.
+            return
+        try:
+            panel.destroy()
+        except Exception:
+            pass
+        try:
+            raiz.quit()
+        except Exception:
+            pass
 
     if not embebido:
         panel.protocol("WM_DELETE_WINDOW", _salir)
@@ -2479,7 +2477,14 @@ def _panel_analisis(grupos, perfiles_por_id, sin_perfil, fuente,
     chk_hist = ttk.Checkbutton(marco_botones, text="Sismicidad histórica",
                                variable=var_hist, command=_alternar_hist)
     chk_hist.pack(side='left', padx=8)
-    _boton(marco_botones, ("Cerrar panel" if embebido else "Salir"), _salir)
+    # Solo la ventana propia lleva botón de salida. En el panel embebido el
+    # botón «Cerrar panel» se quitó: vaciaba los widgets sin avisarle a la
+    # aplicación, que seguía creyendo que el panel estaba construido, así que
+    # la pestaña quedaba muda el resto de la sesión y, con el botón de procesar
+    # esa fuente deshabilitado por «ya procesada», no había forma de volver a
+    # dibujarlo. Cambiar de pestaña ya cumple la misma función.
+    if not embebido:
+        _boton(marco_botones, "Salir", _salir)
 
     _poblar_arbol()
     if arbol.get_children():
@@ -2556,13 +2561,16 @@ def _agrupar_por_perfil(eventos, perfiles_por_id):
     return grupos, sin_perfil, huerfanos
 
 
-def abrir_panel(contenedor, archivo_json, fuente, etiqueta_fuente=None):
+def abrir_panel(contenedor, archivo_json, fuente, etiqueta_fuente=None,
+                vista=None):
     """
-    Carga 'archivo_json' (eventos_<fuente>.json) y muestra el panel de análisis
+    Carga 'archivo_json' (eventos_<vista>.json) y muestra el panel de análisis
     EMBEBIDO en 'contenedor' (un widget ttk). Se usa desde la aplicación
     (app.py). 'etiqueta_fuente' se muestra en la cabecera (# "No publicados de
-    seisan" pese a usar eventos_seisan.json). Devuelve True si el panel quedó
-    operativo.
+    seisan"). 'fuente' decide el comportamiento (estilos/percibidos/analista) y
+    'vista' de dónde sale conteo_perfiles_<vista>.json (default: 'fuente') para
+    que los «no publicados» no lean el conteo de la fuente principal.
+    Devuelve True si el panel quedó operativo.
     """
     if not archivo_json or not os.path.isfile(archivo_json):
         return False
@@ -2577,7 +2585,7 @@ def abrir_panel(contenedor, archivo_json, fuente, etiqueta_fuente=None):
     n_eventos = len(eventos)
     n_sospechosos = sum(1 for ev in eventos if ev.get('sospechoso'))
     total_percibidos = sum(1 for ev in eventos if ev.get('percibido') == "S")
-    conteo_por_perfil, conteo_total = _cargar_conteo(fuente)
+    conteo_por_perfil, conteo_total = _cargar_conteo(vista or fuente)
     return _panel_analisis(grupos, perfiles_por_id, sin_perfil, fuente,
                            conteo_por_perfil, conteo_total, n_eventos,
                            n_sospechosos, total_percibidos,

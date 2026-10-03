@@ -8,11 +8,14 @@ UN solo archivo JSON por fuente con todos los eventos, cada uno adornado con su
 perfil y las coordenadas calculadas para el ploteo.
 
 Uso:
-    python3 generajson.py <archivo_csv> <fuente> [--umbral=KM] [--k=K] [--umbral-perp=KM] [--margen-borde=KM]
+    python3 generajson.py <archivo_csv> <fuente> [--umbral=KM] [--k=K] [--umbral-perp=KM] [--margen-borde=KM] [--salida=NOMBRE]
 
     archivo_csv : archivo .csv con los eventos (p. ej. salida_collect.csv o
                   new_2_*.csv)
     fuente      : "seisan" | "seiscomp" | "eventquery"
+    --salida=NOMBRE : nombre base de los archivos de salida (default: la misma
+                  'fuente'). Sirve para que los «no publicados» reusen el parseo
+                  de su fuente sin pisar eventos_<fuente>.json.
 
 Las tres fuentes se leen por POSICIÓN, y el archivo tiene que llevar el índice
 de la fila como columna 0 (es lo que escribe pandas con to_csv() por defecto),
@@ -38,7 +41,7 @@ conversor de cada fuente tiene que avisar cuántas descartó.
                   Default MARGEN_BORDE_KM de asigna_perfiles.py (0.0).
 
 Salida:
-    eventos_<fuente>.json    (lista de eventos con sus campos originales más
+    eventos_<vista>.json    (lista de eventos con sus campos originales más
     "perfil", "along_km", "perp_km", "residuo_km" y "dist_asoc", y las
     claves de trazabilidad "archivo_origen" y "n_fila_origen")
 """
@@ -56,11 +59,13 @@ import prog
 
 
 def parsear_extra_args(args):
-    """Extrae --umbral=KM, --k=K, --umbral-perp=KM y --margen-borde=KM."""
+    """Extrae --umbral=KM, --k=K, --umbral-perp=KM, --margen-borde=KM
+    y --salida=NOMBRE."""
     umbral = None
     k_peso = None
     umbral_perp = None
     margen_borde = None
+    salida = None
     for arg in args:
         if arg.startswith("--umbral="):
             umbral = float(arg.split("=", 1)[1])
@@ -70,7 +75,9 @@ def parsear_extra_args(args):
             umbral_perp = float(arg.split("=", 1)[1])
         elif arg.startswith("--margen-borde="):
             margen_borde = float(arg.split("=", 1)[1])
-    return umbral, k_peso, umbral_perp, margen_borde
+        elif arg.startswith("--salida="):
+            salida = arg.split("=", 1)[1]
+    return umbral, k_peso, umbral_perp, margen_borde, salida
 
 
 def _distancia_aprox_km(lat1, lon1, lat2, lon2):
@@ -203,11 +210,17 @@ def _texto_calidad_cruce(ev):
 
 
 def procesar_csv(archivo_csv, fuente, umbral=None, k_peso=None,
-                 umbral_perp=None, margen_borde=None):
+                 umbral_perp=None, margen_borde=None, salida=None):
     """
-    Procesa el .csv, asigna perfiles y escribe eventos_<fuente>.json.
+    Procesa el .csv, asigna perfiles y escribe eventos_<vista>.json.
+
+    'fuente' decide cómo se lee el CSV (seisan / seiscomp / eventquery) y la
+    atribución; 'salida' (la "vista") es solo el nombre base en disco. Permite
+    que los no publicados usen el parseo de su fuente sin pisar el JSON de la
+    fuente principal.
     Devuelve (total_eventos, con_perfil, sin_perfil).
     """
+    vista = salida or fuente
     if umbral is None:
         umbral = ap.UMBRAL_DIST_KM
     if k_peso is None:
@@ -354,12 +367,12 @@ def procesar_csv(archivo_csv, fuente, umbral=None, k_peso=None,
         ev.pop('lon', None)
         ev.pop('lat', None)
 
-    salida_json = rutas.p_datos('eventos_%s.json' % fuente)
+    salida_json = rutas.p_datos('eventos_%s.json' % vista)
     with open(salida_json, 'w') as jsonfile:
         json.dump(eventos, jsonfile, indent=4)
 
     # Lista de eventos que podrían estar mal localizados (sospechosos)
-    sospechosos_csv = rutas.p_datos('sospechosos_%s.csv' % fuente)
+    sospechosos_csv = rutas.p_datos('sospechosos_%s.csv' % vista)
     with open(sospechosos_csv, 'w', newline='') as csvfile:
         escritor = csv.writer(csvfile)
         escritor.writerow(['id', 'fecha hora', 'latitud', 'longitud', 'prof',
@@ -453,7 +466,7 @@ def procesar_csv(archivo_csv, fuente, umbral=None, k_peso=None,
         #print('  %-12s %d' % (label, conteo[per]))
 
     # Guarda el conteo para que plotear.py lo muestre a medida que plotea
-    conteo_json = rutas.p_datos('conteo_perfiles_%s.json' % fuente)
+    conteo_json = rutas.p_datos('conteo_perfiles_%s.json' % vista)
     with open(conteo_json, 'w') as f:
         json.dump({'total': total_eventos,
                    'con_perfil': with_perfil,
@@ -474,13 +487,15 @@ if __name__ == "__main__":
 
     archivo_csv = sys.argv[1]
     fuente = sys.argv[2]
-    umbral_usr, k_usr, umbral_perp_usr, margen_usr = parsear_extra_args(
-        sys.argv[3:])
+    umbral_usr, k_usr, umbral_perp_usr, margen_usr, salida_usr = \
+        parsear_extra_args(sys.argv[3:])
+    vista = salida_usr or fuente
 
     if not os.path.isfile(archivo_csv):
         print("Error: no se encontró el archivo '%s'." % archivo_csv)
         sys.exit(1)
 
     procesar_csv(archivo_csv, fuente, umbral=umbral_usr, k_peso=k_usr,
-                 umbral_perp=umbral_perp_usr, margen_borde=margen_usr)
-    print('Archivo JSON generado:', 'eventos_%s.json' % fuente)
+                 umbral_perp=umbral_perp_usr, margen_borde=margen_usr,
+                 salida=salida_usr)
+    print('Archivo JSON generado:', 'eventos_%s.json' % vista)

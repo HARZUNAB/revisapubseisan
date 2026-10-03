@@ -88,6 +88,8 @@ import re
 import sys
 from datetime import datetime
 
+import prog
+
 try:
     # El módulo de mediciones solo existe en el proyecto NewPT; acá es opcional.
     import mediciones as med
@@ -889,7 +891,8 @@ def _consultar_eventos_de_base(base, inicio, fin, solo_confirmados):
 
 
 def _escribir_fases_de_base(base, inicio, fin, solo_confirmados, dueno,
-                            ruta_fases, resumen_por_evento):
+                            ruta_fases, resumen_por_evento, esperado=None,
+                            progreso=None):
     """
     Escribe las fases de UNA base, y solo de los eventos que le tocan, yendo por
     lotes con un cursor de servidor.
@@ -904,6 +907,10 @@ def _escribir_fases_de_base(base, inicio, fin, solo_confirmados, dueno,
     tener los resultados de las dos bases en memoria al mismo tiempo.
 
     El archivo ya viene con su encabezado escrito: esta función solo agrega.
+
+    'esperado' es la cantidad estimada de llegadas y 'progreso' un callback
+    opcional que recibe (escritas, esperado) tras cada lote, para el avance de la
+    interfaz. Sin callback no se informa nada.
     """
     config = configuracion(base)
     total = 0
@@ -936,6 +943,8 @@ def _escribir_fases_de_base(base, inicio, fin, solo_confirmados, dueno,
                 # El resumen se acumula por evento, así que no hace falta
                 # guardar las filas: al final solo quedan los conteos.
                 _acumular_por_evento(resumen_por_evento, filas)
+                if progreso is not None:
+                    progreso(total, esperado)
         cursor.close()
         _medir("fases_fin", "base=%s" % base)
     finally:
@@ -1060,6 +1069,10 @@ def exportar_ventana(inicio, fin, salida=None, base=None,
         # Se arranca el cronómetro acá para incluir el import de psycopg2.
         med.arranque("consulta")
 
+    # Cada exportación informa su propio avance; si el proceso se reusa (no es
+    # el caso normal, el CLI siempre arranca de cero) se reinicia el umbral.
+    prog.avance_reset()
+
     if salida is None:
         salida = ruta_datos("seiscomp_%s_%s.csv"
                             % (inicio.strftime(FORMATO), fin.strftime(FORMATO)))
@@ -1072,6 +1085,7 @@ def exportar_ventana(inicio, fin, salida=None, base=None,
               % (inicio.strftime(FORMATO), fin.strftime(FORMATO)))
         print("   [Aviso] Se reusa la exportación existente; no se consulta"
               " la base.")
+        prog.avance(1.0)
         return {
             "ruta": os.path.abspath(salida),
             "ruta_fases": os.path.abspath(salida_fases),
@@ -1090,6 +1104,7 @@ def exportar_ventana(inicio, fin, salida=None, base=None,
         pass
 
     bases = _bases_a_consultar(base)
+    n = max(1, len(bases))
 
     print("   Ventana       : %s  ->  %s  (UTC)"
           % (inicio.strftime(FORMATO), fin.strftime(FORMATO)))
@@ -1104,7 +1119,7 @@ def exportar_ventana(inicio, fin, salida=None, base=None,
     eventos_por_base = {}
     coberturas = {}
     estimacion = {}
-    for nombre in bases:
+    for i, nombre in enumerate(bases):
         print("   Consultando %s..." % nombre)
         filas, cobertura, estimadas = _consultar_eventos_de_base(
             nombre, inicio, fin, solo_confirmados)
@@ -1113,6 +1128,8 @@ def exportar_ventana(inicio, fin, salida=None, base=None,
         coberturas[nombre] = cobertura
         estimacion[nombre] = estimadas
         print("      %d eventos." % len(filas))
+        # La consulta de eventos ocupa el primer 40 % del avance.
+        prog.avance(0.40 * (i + 1) / n)
 
     # La base que llega más lejos en el tiempo es la que recibe datos, y es la
     # que gana cuando un evento está en más de una.
@@ -1143,6 +1160,7 @@ def exportar_ventana(inicio, fin, salida=None, base=None,
         fila.setdefault("base_datos", "")
     _verificar_columnas(filas)
     _escribir_csv(salida, filas)
+    prog.avance(0.50)
 
     # Las fases van por lotes. Lo único que se retiene es el resumen por evento.
     # El archivo se crea acá, con su encabezado, y después todas las bases
@@ -1151,13 +1169,24 @@ def exportar_ventana(inicio, fin, salida=None, base=None,
     _escribir_csv(salida_fases, [], CABECERA_FASES)
     resumen_por_evento = {}
     total_fases = 0
-    for nombre in bases:
+    for i, nombre in enumerate(bases):
         print("   Escribiendo fases de %s..." % nombre)
+        esperado = estimacion.get(nombre)
+
+        def _avance_fases(escritas, esperado=esperado, i=i):
+            # Dentro de la base se avanza según la estimación; si no hay
+            # estimación (o es 0) se deja el sub-bloque a media asta y se
+            # completa recién al terminar la base.
+            frac = min(1.0, escritas / esperado) if esperado else 0.5
+            prog.avance(0.50 + 0.50 * ((i + frac) / n))
+
         total = _escribir_fases_de_base(
             nombre, inicio, fin, solo_confirmados, dueno, salida_fases,
-            resumen_por_evento)
+            resumen_por_evento, esperado=esperado, progreso=_avance_fases)
         print("      %d llegadas." % total)
         total_fases += total
+        # Pase lo que pase con la estimación, la base cerrada avanza su bloque.
+        prog.avance(0.50 + 0.50 * ((i + 1) / n))
     _medir("escritura_fin")
 
     resumen = _resumen_desde_mapa(resumen_por_evento)
@@ -1165,6 +1194,7 @@ def exportar_ventana(inicio, fin, salida=None, base=None,
     # La marca va al final, después de escribir las fases: es lo último que se
     # hace, y es lo que dice que no quedó nada a medias.
     _escribir_marca(marca, inicio, fin, len(filas), total_fases, bases)
+    prog.avance(1.0)
 
     return {
         "ruta": os.path.abspath(salida),

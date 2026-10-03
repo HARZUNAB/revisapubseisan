@@ -122,6 +122,7 @@ COLUMNAS_CATALOGO_EVENTQUERY = [
     ("tipo", "Tipo", 60, False),
     ("referencia", "Referencia", 280, False),
     ("percibido", "Percib.", 70, False),
+    ("analista", "Analista probable", 170, False),
 ]
 
 # Columnas del árbol de llegadas: (clave, título, ancho).
@@ -1079,7 +1080,7 @@ def abrir_panel(contenedor, ruta_eventos, ruta_fases=None,
 
 
 def abrir_catalogo(contenedor, ruta_csv, etiqueta_fuente=None, log=None,
-                    cwd=None):
+                    cwd=None, atribuciones=None):
     """
     Abre un catálogo crudo en la pestaña: listado simple, sin llegadas.
 
@@ -1099,6 +1100,16 @@ def abrir_catalogo(contenedor, ruta_csv, etiqueta_fuente=None, log=None,
     if not filas_crudas:
         return False
     eventos = [_normalizar_catalogo(f) for f in filas_crudas]
+
+    # eventquery no trae responsable: si la app dedujo uno cruzando con Seisan
+    # y SeisComp, se escribe en la columna «Analista probable». El catálogo de
+    # Seisan no lo necesita porque su propio CSV ya trae el analista.
+    if etiqueta_fuente == "eventquery" and atribuciones:
+        for ev in eventos:
+            texto = atribuciones.get("%s %s" % (ev.get("fecha", ""),
+                                                ev.get("hora", "")))
+            if texto:
+                ev["analista"] = texto
 
     # La carpeta del listado exportado es la de trabajo, no la del script.
     if cwd is None:
@@ -1282,6 +1293,162 @@ def abrir_catalogo(contenedor, ruta_csv, etiqueta_fuente=None, log=None,
                command=_llenar_eventos).pack(side="left", padx=(8, 0))
 
     _llenar_eventos()
+    return True
+
+
+def _misma_profundidad(a, b):
+    """
+    Compara profundidades ignorando el signo.
+
+    Réplica de la de compara.py. Está duplicada a propósito y no por descuido:
+    comparar.py ejecuta la comparación en el nivel superior (lee sys.argv y
+    escribe informes), así que importarlo desde acá dispararía otra corrida
+    completa. Si alguna vez se cambia una, hay que cambiarla en los dos lados.
+    """
+    a, b = (a or "").strip(), (b or "").strip()
+    if not a or not b:
+        return a == b
+    try:
+        return abs(float(a)) == abs(float(b))
+    except ValueError:
+        return a == b
+
+
+# Eventos que sí están publicados pero cuyos parámetros no coinciden con los de
+# la solución local. Los deltas son distancias (compara.py las toma positivas
+# antes de guardarlas), no desplazamientos con signo: 0.018 es que hay 18 m de
+# diferencia, no hacia dónde.
+COLUMNAS_NO_ACTUALIZADO = [
+    ("fecha_local", "Fecha y hora (local)", 150),
+    ("lat_local", "Latitud", 95),
+    ("lon_local", "Longitud", 95),
+    ("prof_local", "Prof. km", 75),
+    ("mag_local", "Mag. local", 80),
+    ("analista", "Analista", 90),
+    ("mag_eventquery", "Mag. publicada", 95),
+    ("dt_seg", "Δt (s)", 70),
+    ("dlat", "Δlat (°)", 80),
+    ("dlon", "Δlon (°)", 80),
+]
+
+
+def _no_actualizados(fuente, cwd=None):
+    """
+    Filas de 'no actualizado' de una fuente, una por evento local.
+
+    Se parte de datos/atribucion_<fuente>.csv, que compara.py escribe con un
+    registro por CRUCE. Un mismo evento local puede aparecer en más de una fila
+    si cayó dentro de la tolerancia de dos eventos publicados: el informe .txt
+    escribe una fila por evento local, y el CSV una por cruce, así que hay que
+    agrupar para no mostrar el mismo evento repetido. De cada grupo se queda el
+    mejor cruce (menor Δt), que es la misma idea de _analistas_para_evento.
+    """
+    if cwd is None:
+        cwd = os.getcwd()
+    ruta = os.path.join(cwd, "datos", "atribucion_%s.csv" % fuente)
+    if not os.path.isfile(ruta):
+        return None
+    try:
+        filas = _leer_csv(ruta)
+    except OSError:
+        return None
+    mejores = {}
+    for fila in filas:
+        if not _no_actualizado(fila):
+            continue
+        clave = (fila.get("fecha_local", ""), fila.get("lat_local", ""),
+                 fila.get("lon_local", ""))
+        actual = mejores.get(clave)
+        if actual is None or _a_float(fila.get("dt_seg")) < _a_float(
+                actual.get("dt_seg")):
+            mejores[clave] = fila
+    return list(mejores.values())
+
+
+def _no_actualizado(fila):
+    """Si este cruce marca el evento como no actualizado.
+
+    Mismo criterio que usa comparar() en compara.py: cambia la latitud, la
+    longitud o la profundidad. Se comparan las cadenas tal cual llegan del CSV
+    porque el cruzador original también compara las suyas, no los números
+    redondeados: dos fuentes pueden escribir el mismo valor con distinta
+    cantidad de decimales y para el informe eso cuenta como diferencia.
+    """
+    if (fila.get("lat_eventquery", "") != fila.get("lat_local", "")
+            or fila.get("lon_eventquery", "") != fila.get("lon_local", "")):
+        return True
+    return not _misma_profundidad(fila.get("prof_eventquery", ""),
+                                   fila.get("prof_local", ""))
+
+
+def abrir_no_actualizados(contenedor, fuente, log=None, cwd=None):
+    """
+    Lista los eventos publicados que no coinciden con la solución local.
+
+    Los datos salen de datos/atribucion_<fuente>.csv, que escribe la corrida
+    del análisis: no consulta nada ni recalcula el cruce, solo lo muestra. La
+    fuente es 'seisan' o 'seiscomp'.
+    """
+    log = log or (lambda _t: None)
+    if contenedor is None:
+        return False
+    if cwd is None:
+        cwd = os.getcwd()
+    filas = _no_actualizados(fuente, cwd)
+    if filas is None:
+        return False
+
+    try:
+        import ttkbootstrap as ttk
+    except ImportError:
+        return False
+
+    for hijo in contenedor.winfo_children():
+        hijo.destroy()
+
+    marco = ttk.Frame(contenedor)
+    marco.pack(fill="both", expand=True, padx=8, pady=6)
+    ttk.Label(marco, text="%d evento%s con parámetros distintos de lo "
+                          "publicado." % (len(filas), "" if len(filas) == 1
+                                           else "s"),
+              bootstyle="secondary").pack(anchor="w", pady=(0, 4))
+
+    marco_tabla = ttk.Frame(marco)
+    marco_tabla.pack(fill="both", expand=True)
+    claves = [c for c, _, _ in COLUMNAS_NO_ACTUALIZADO]
+    arbol = ttk.Treeview(marco_tabla, columns=claves, show="headings",
+                         selectmode="browse")
+    for clave, titulo, ancho in COLUMNAS_NO_ACTUALIZADO:
+        arbol.heading(clave, text=titulo)
+        arbol.column(clave, width=ancho, minwidth=45, stretch=False)
+    barra_v = ttk.Scrollbar(marco_tabla, orient="vertical",
+                            command=arbol.yview)
+    arbol.configure(yscrollcommand=barra_v.set)
+    barra_h = ttk.Scrollbar(marco_tabla, orient="horizontal",
+                            command=arbol.xview)
+    arbol.configure(xscrollcommand=barra_h.set)
+    arbol.pack(side="left", fill="both", expand=True)
+    barra_v.pack(side="right", fill="y")
+    barra_h.pack(side="bottom", fill="x")
+
+    for indice, fila in enumerate(filas):
+        valores = []
+        for clave, _titulo, _ancho in COLUMNAS_NO_ACTUALIZADO:
+            bruto = fila.get(clave, "")
+            if clave in ("lat_local", "lon_local", "dlat", "dlon"):
+                valores.append(_texto(bruto))
+            elif clave in ("prof_local", "mag_local", "mag_eventquery",
+                           "dt_seg"):
+                valores.append(_numero(bruto))
+            else:
+                valores.append(str(bruto))
+        # Un "-0.0" en los deltas viene de la resta antes de tomar el valor
+        # absoluto; se muestra como 0 para que no parezca algo raro.
+        valores = ["0" if v == "-0.0" else v for v in valores]
+        arbol.insert("", "end", iid=str(indice), values=valores)
+
+    log("No actualizados de %s: %d eventos."
+        % (fuente, len(filas)))
     return True
 
 
