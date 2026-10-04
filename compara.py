@@ -9,6 +9,7 @@ import pandas as pd
 
 import rutas
 import prog
+import comparacion
 
 # parametros de los dos niveles de filtro (amplio y estricto)
 # Ojo con las tolerancias: 2.0 grados de latitud son unos 220 km, holgado
@@ -34,6 +35,13 @@ MAX_LAT_LON_AMPLIO=2.0
 MAX_SEG_ESTRICTO=3
 MAX_LAT_LON_ESTRICTO=1.0
 
+# Dentro de esa ventana, un evento se considera actualizado si sus parámetros
+# coinciden con la solución local a la precisión con la que se manejan:
+# coordenadas a 3 decimales, profundidad y magnitud a 1 (ver comparacion.py).
+# Antes se comparaban los textos tal cual, y el mismo valor escrito con
+# distinta cantidad de decimales (-31.64 contra -31.639999...) se marcaba como
+# no actualizado. La comparación numérica incluye ahora también la magnitud.
+
 # cabecera para cada archivo .txt de salida (Para plotear con google earth)
 cabecera="fecha hora latitud longitud prof mag tipomag analista percibido\n"
 
@@ -50,27 +58,6 @@ def _parsear_fecha_hora(texto):
         texto=texto[:-2]+'59'
     return datetime.datetime.strptime(texto, _FORMATO)
 
-def _misma_profundidad(a, b):
-    # Compara profundidades ignorando el signo, a propósito, como defensa.
-    # Las dos caras del cruce vienen de sistemas distintos (la base local
-    # contra el catálogo publicado) y una diferencia de convención entre
-    # ellas marcaría el informe entero como "no actualizada en la web", que
-    # es el falso positivo que este informe trata de evitar.
-    # Hoy las dos entregan km positivo hacia abajo: las 901 filas de
-    # new_2_sep_2026_1_29.csv dan entre 5.0 y 307.6 km, ninguna negativa, y
-    # m_depth_value de SeisComp también. O sea que hoy esta función no cambia
-    # ningún veredicto; queda solo como red de seguridad para el día en que
-    # alguna de las dos fuentes cambie, en vez de abrir el informe entero.
-    # Un vacío contra un número sí se considera distinto: no hay dato con qué
-    # comparar, y fingir que son iguales escondería la diferencia.
-    a, b = (a or "").strip(), (b or "").strip()
-    if not a or not b:
-        return a == b
-    try:
-        return abs(float(a)) == abs(float(b))
-    except ValueError:
-        return a == b
-
 def _magnitud(texto):
     # Magnitud como float, o None si no hay dato o no se puede leer.
     # Las soluciones preferred de SeisComp admiten eventos sin magnitud, y
@@ -83,6 +70,14 @@ def _magnitud(texto):
         return float(texto)
     except ValueError:
         return None
+
+def _borrar(ruta):
+    # Borra un CSV de salida que esta corrida dejó vacío, para que no quede el
+    # de una corrida anterior y la pestaña muestre datos viejos.
+    try:
+        os.remove(ruta)
+    except OSError:
+        pass
 
 def comparar(listacsv_1, listacsv_2, max_seg, max_lat, max_lon, sufijo,
              prefijo=""):
@@ -189,7 +184,11 @@ def comparar(listacsv_1, listacsv_2, max_seg, max_lat, max_lon, sufijo,
                         "dlat": round(delta_lat, 4),
                         "dlon": round(delta_lon, 4),
                     })
-                    if sismo2['lat'] != sismo1['lat'] or sismo2['lon'] != sismo1['lon'] or not _misma_profundidad(sismo2['prof'], sismo1['prof']):
+                    if comparacion.parametros_discrepantes(
+                            sismo1['lat'], sismo1['lon'],
+                            sismo1['prof'], sismo1['mag'],
+                            sismo2['lat'], sismo2['lon'],
+                            sismo2['prof'], sismo2['mag']):
                         per_noper=sismo1['perc']
                         diferencias=1
 
@@ -231,33 +230,42 @@ def comparar(listacsv_1, listacsv_2, max_seg, max_lat, max_lon, sufijo,
         df = pd.DataFrame(listanopub)
         df.columns=['Fecha_Hora', 'Latitud', 'Longitud', 'Prof.', 'Mag.', 'Tipo_mag.', 'Analista']
         df.to_csv(salida)
+    else:
+        # Sin no publicados, se borra el CSV: si no, quedaría el de la corrida
+        # anterior y app.py lo leería como si fuera de esta.
+        _borrar(salida)
 
-    # Atribución: de qué analista es cada evento publicado. Solo se escribe con
-    # el filtro estricto, que es el que sirve para atribuir (con el amplio se
-    # cuela un cruce erróneo sin ganar ninguno, ver la nota de tolerancias).
-    # Sin cruces no se escribe archivo: "no existe" significa "no hay nada
-    # que atribuir", que es distinto de un archivo vacío.
-    if cruces and sufijo == "estricto":
+    # Atribución: de qué analista es cada evento publicado. Solo se toca con el
+    # filtro estricto, que es el que sirve para atribuir (con el amplio se cuela
+    # un cruce erróneo sin ganar ninguno, ver la nota de tolerancias). Sin
+    # cruces se borra el archivo: "no existe" significa "no hay nada que
+    # atribuir", que es distinto de un archivo vacío, y así no queda el de una
+    # corrida anterior.
+    if sufijo == "estricto":
         fuente = prefijo.rstrip("_") or "seisan"
-        candidatos = {}
-        for c in cruces:
-            clave = c["n_fila_eventquery"]
-            candidatos[clave] = candidatos.get(clave, 0) + 1
-        columnas = ["n_fila_eventquery", "fecha_eventquery", "lat_eventquery",
-                    "lon_eventquery", "prof_eventquery", "mag_eventquery",
-                    "percibido", "fecha_local", "lat_local", "lon_local",
-                    "prof_local", "mag_local", "analista", "dt_seg", "dlat",
-                    "dlon", "n_candidatos", "fuente"]
         destino = rutas.p_datos("atribucion_%s.csv" % fuente)
-        with open(destino, "w", newline="") as salida_atr:
-            escritor = csv.writer(salida_atr)
-            escritor.writerow(columnas)
+        if cruces:
+            candidatos = {}
             for c in cruces:
-                fila = [c[col] for col in columnas[:-2]]
-                fila.extend([candidatos[c["n_fila_eventquery"]], fuente])
-                escritor.writerow(fila)
-        print('atribución de %s: %d cruces sobre %d eventos publicados'
-              % (fuente, len(cruces), len(candidatos)))
+                clave = c["n_fila_eventquery"]
+                candidatos[clave] = candidatos.get(clave, 0) + 1
+            columnas = ["n_fila_eventquery", "fecha_eventquery",
+                        "lat_eventquery", "lon_eventquery", "prof_eventquery",
+                        "mag_eventquery", "percibido", "fecha_local",
+                        "lat_local", "lon_local", "prof_local", "mag_local",
+                        "analista", "dt_seg", "dlat", "dlon", "n_candidatos",
+                        "fuente"]
+            with open(destino, "w", newline="") as salida_atr:
+                escritor = csv.writer(salida_atr)
+                escritor.writerow(columnas)
+                for c in cruces:
+                    fila = [c[col] for col in columnas[:-2]]
+                    fila.extend([candidatos[c["n_fila_eventquery"]], fuente])
+                    escritor.writerow(fila)
+            print('atribución de %s: %d cruces sobre %d eventos publicados'
+                  % (fuente, len(cruces), len(candidatos)))
+        else:
+            _borrar(destino)
 
     archivo.close()
     archivo1.close()
@@ -292,39 +300,19 @@ numsis_csv_1=0
 numsis_csv_2=0
 
 # Creando diccionario que contiene lista con datos extraidos del .csv ordenado (eventquery)
+# Las columnas numéricas se normalizan al formato fijo del flujo (coordenadas
+# 3 decimales, profundidad y magnitud 1) con comparacion.py, que reemplaza al
+# viejo relleno de ceros. Así las salidas quedan consistentes y la comparación
+# numérica no depende de cuántos decimales traiga cada fuente.
 for linea1 in csvreader_1:
-    # Completa con ceros la latitud
-    if len(linea1[2])<=6:
-        largo_lat=len(linea1[2])
-        if largo_lat==3:
-            linea1[2]=linea1[2]+".000"
-        if largo_lat==4:
-            linea1[2]=linea1[2]+"000"
-        if largo_lat==5:
-            linea1[2]=linea1[2]+"00"
-        if largo_lat==6:
-            linea1[2]=linea1[2]+"0"
-
-    # Completa con ceros la longitud
-    if len(linea1[3])<=6:
-        largo_lon=len(linea1[3])
-        if largo_lon==3:
-            linea1[3]=linea1[3]+".000"
-        if largo_lon==4:
-            linea1[3]=linea1[3]+"000"
-        if largo_lon==5:
-            linea1[3]=linea1[3]+"00"
-        if largo_lon==6:
-            linea1[3]=linea1[3]+"0"
-
     diccsv_1={
         "n_fila":linea1[0],
         "fecha_hora":linea1[1],
         "dt":_parsear_fecha_hora(linea1[1]),
-        "lat":linea1[2],
-        "lon":linea1[3],
-        "prof":linea1[4],
-        "mag":linea1[5],
+        "lat":comparacion.formato_coordenada(linea1[2]),
+        "lon":comparacion.formato_coordenada(linea1[3]),
+        "prof":comparacion.formato_profundidad(linea1[4]),
+        "mag":comparacion.formato_magnitud(linea1[5]),
         "tipo_mag":linea1[6],
         "ref":linea1[7],
         "perc":linea1[8]
@@ -333,37 +321,13 @@ for linea1 in csvreader_1:
 
 # Creando diccionario que contiene lista con datos extraidos del .csv ordenado (seisan)
 for linea2 in csvreader_2:
-    # Completa con ceros la latitud
-    if len(linea2[2])<=6:
-        largo_lat=len(linea2[2])
-        if largo_lat==3:
-            linea2[2]=linea2[2]+".000"
-        if largo_lat==4:
-            linea2[2]=linea2[2]+"000"
-        if largo_lat==5:
-            linea2[2]=linea2[2]+"00"
-        if largo_lat==6:
-            linea2[2]=linea2[2]+"0"
-
-    # Completa con ceros la longitud
-    if len(linea2[3])<=6:
-        largo_lon=len(linea2[3])
-        if largo_lon==3:
-            linea2[3]=linea2[3]+".000"
-        if largo_lon==4:
-            linea2[3]=linea2[3]+"000"
-        if largo_lon==5:
-            linea2[3]=linea2[3]+"00"
-        if largo_lon==6:
-            linea2[3]=linea2[3]+"0"
-
     diccsv_2={
         "fecha_hora":linea2[1],
 		"dt":_parsear_fecha_hora(linea2[1]),
-		"lat":linea2[2],
-		"lon":linea2[3],
-		"prof":linea2[4],
-		"mag":linea2[5],
+		"lat":comparacion.formato_coordenada(linea2[2]),
+		"lon":comparacion.formato_coordenada(linea2[3]),
+		"prof":comparacion.formato_profundidad(linea2[4]),
+		"mag":comparacion.formato_magnitud(linea2[5]),
 		"tipo_mag":linea2[6],
 		"analista":linea2[7],
     }

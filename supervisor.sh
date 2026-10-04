@@ -11,8 +11,8 @@
 #
 # Sin parámetros abre la ventana de solicitud de catálogos (Seisan y
 # eventquery desde el servidor remoto, más la ventana de SeisComp) y, al
-# terminar, la ventana principal de revisión. Luego se pulsa «Ejecutar
-# análisis» cuando se quiera procesar.
+# terminar, la ventana principal de revisión. Luego se pulsa «Procesar
+# catálogos» cuando se quiera procesar.
 #
 # El modo antiguo sigue disponible para trabajos puntuales:
 #   ./supervisor.sh <archivo_entrada.csv> <archivo_salida.dat>

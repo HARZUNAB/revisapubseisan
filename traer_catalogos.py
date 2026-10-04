@@ -222,18 +222,19 @@ def verificar_conexion(conexion, log=None, progreso=None):
     _emitir(progreso, 1.0)
 
 
-def traer_seisan(inicio14, fin14, conexion, cwd=".", log=None, progreso=None):
+def traer_seisan(inicio14, fin14, conexion, cwd=".", log=None, progreso=None,
+                 forzar=False):
     """
     Baja el select de Seisan para la ventana pedida.
 
     Reuso: si ya está el archivo local de esa ventana, no se vuelve a consultar
     el servidor. El archivo lleva las fechas en el nombre justamente para poder
-    reusarlo sin ambigüedad.
+    reusarlo sin ambigüedad. Con 'forzar' se rebaja aunque exista (re-exportar).
     """
     log = log or (lambda _t: None)
     nombre_salida = "select_%s_%s.out" % (inicio14, fin14)
     destino = os.path.join(cwd, nombre_salida)
-    if os.path.isfile(destino) and os.path.getsize(destino) > 0:
+    if not forzar and os.path.isfile(destino) and os.path.getsize(destino) > 0:
         log("[reuso] Seisan ya estaba en disco: %s" % nombre_salida)
         _emitir(progreso, 1.0)
         return destino
@@ -264,12 +265,15 @@ def traer_seisan(inicio14, fin14, conexion, cwd=".", log=None, progreso=None):
 
 
 def traer_eventquery(inicio14, fin14, conexion, cwd=".", log=None,
-                     progreso=None):
-    """Baja el catálogo de eventquery para la ventana pedida (con reuso)."""
+                     progreso=None, forzar=False):
+    """Baja el catálogo de eventquery para la ventana pedida (con reuso).
+
+    Con 'forzar' se rebaja aunque el archivo exista (re-exportar).
+    """
     log = log or (lambda _t: None)
     nombre_salida = "eventquery_%s_%s.csv" % (inicio14, fin14)
     destino = os.path.join(cwd, nombre_salida)
-    if os.path.isfile(destino) and os.path.getsize(destino) > 0:
+    if not forzar and os.path.isfile(destino) and os.path.getsize(destino) > 0:
         log("[reuso] eventquery ya estaba en disco: %s" % nombre_salida)
         _emitir(progreso, 1.0)
         return destino

@@ -3,16 +3,30 @@
 app.py
 ======
 Aplicación de escritorio (ttkbootstrap) que unifica el menú del supervisor con
-el flujo de análisis y revisión. En esta FASE 1 la ventana principal permite:
+el flujo de análisis y revisión. La ventana principal gira alrededor de un solo
+botón, «Procesar catálogos», que con los catálogos ya descargados:
 
-  - Ejecutar el análisis (proc_query -> revisaselect -> revisacollect ->
+  - Corre el análisis (proc_query -> revisaselect -> revisacollect ->
     compara -> [atribución a SeisComp] -> [revisaexcluidos/repetidosexclu] ->
     repetidos) mostrando el registro (log) en vivo.
-  - Generar el JSON por fuente (Seisan / eventquery / SeisComp / No publicados
-    de seisan / No publicados de SeisComp) y abrir el ploteo.
+  - Genera el JSON de todas las fuentes (Seisan / eventquery / SeisComp / No
+    publicados de seisan / No publicados de SeisComp) y arma las pestañas de
+    catálogo. Las fuentes que ya están al día se omiten.
+  - Deja toda la información disponible para consultar en sus pestañas, sin
+    tener que pulsar un botón por salida.
+
+Al abrir, la aplicación reconoce qué hay en el directorio de ejecución y deja
+cada pestaña en su estado (con datos, pendiente de procesar o sin datos). Los
+paneles pendientes se generan en segundo plano al abrir su pestaña.
+
+La barra lateral se organiza en Procesar / Consultar / Re-exportar. «Consultar»
+reúne «Ver repetidos» y los listados de «No publicados». «Re-exportar» solo
+habilita el catálogo que falta o que cambió; si la extracción inicial no pudo
+con uno, la app lo avisa y deja re-obtenerlo ahí mismo.
+
   - Revisar los datos de SeisComp: la exportación de la ventana la deja la
-    solicitud de catálogos y la revisión se abre en su pestaña al terminar el
-    análisis, junto con los catálogos de Seisan y eventquery.
+    solicitud de catálogos y la revisión se abre en su pestaña, junto con los
+    catálogos de Seisan y eventquery.
   - Atribuir los publicados a SeisComp: la misma comparación, corrida sobre las
     soluciones preferred en vez de las de Seisan, deja en
     informes/no_act_seiscomp_estricto.txt qué publicado quedó desactualizado y
@@ -20,14 +34,19 @@ el flujo de análisis y revisión. En esta FASE 1 la ventana principal permite:
   - Ver los reportes de eventos repetidos.
 
 Recibe como argumentos el archivo de entrada ($1) y el de salida temporal
-($2), igual que el antiguo supervisor.sh. Las salidas se organizan por
-contenido en el directorio de ejecución (ver rutas.py).
+($2), igual que el antiguo supervisor.sh. Opcionalmente un tercer argumento
+($3) con un JSON de estado que deja solicita_catalogos.py: el período y qué
+catálogos no se pudieron obtener. Las salidas se organizan por contenido en el
+directorio de ejecución (ver rutas.py).
 
 Uso:
-    python3 app.py <archivo_entrada.csv> <archivo_salida.dat>
+    python3 app.py <archivo_entrada.csv> <archivo_salida.dat> [estado.json]
 """
 
+import csv
+import json
 import os
+import shutil
 import sys
 import queue
 import threading
@@ -49,8 +68,10 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PY = sys.executable
 
 REP_FILES = [
-    ("Repetidos públicos (amplio)", "informes/rep_publica_amplio.txt"),
-    ("Repetidos públicos (estricto)", "informes/rep_publica_estricto.txt"),
+    ("Repetidos publicados (eventquery) (amplio)",
+     "informes/rep_publica_amplio.txt"),
+    ("Repetidos publicados (eventquery) (estricto)",
+     "informes/rep_publica_estricto.txt"),
     ("Repetidos seisan (amplio)", "informes/rep_seisan_amplio.txt"),
     ("Repetidos seisan (estricto)", "informes/rep_seisan_estricto.txt"),
     ("Repetidos excluidos seisan", "informes/rep_seisan_exclu.txt"),
@@ -134,6 +155,7 @@ FUENTE_A_VISTA = {
     "nopub": "seisan_nopub",
     "nopub_seiscomp": "seiscomp_nopub",
 }
+VISTA_A_FUENTE = {v: k for k, v in FUENTE_A_VISTA.items()}
 
 
 def _script(nombre):
@@ -184,13 +206,73 @@ FUENTE_PLAN = {
     ],
 }
 
+# Plan del botón maestro «Procesar catálogos». El análisis va primero (con la
+# conversión de SeisComp en el lugar real donde corre: antes de su atribución,
+# ver _asegurar_parametros_seiscomp) y después la generación de los paneles.
+# Los pesos suman 1.0. Las cinco corridas de generajson.py se distinguen con
+# 'discriminador' (su archivo de entrada), porque con el nombre del script solo
+# se ganaría siempre la primera.
+PROCESAR_PLAN = [
+    {"nombre": "Procesando query",
+     "scripts": ("proc_query_harz_2.py",), "peso": 0.075},
+    {"nombre": "Revisando select",
+     "scripts": ("revisaselect.py",), "peso": 0.11},
+    {"nombre": "Revisando collect",
+     "scripts": ("revisacollect.py",), "peso": 0.11},
+    {"nombre": "Comparando publicados v/s procesados",
+     "scripts": ("compara.py",), "peso": 0.15},
+    {"nombre": "Convirtiendo SeisComp",
+     "scripts": ("seiscomp_a_parametros.py",), "peso": 0.04},
+    {"nombre": "Atribuyendo publicados a SeisComp",
+     "scripts": ("compara.py",), "peso": 0.075,
+     "discriminador": "seiscomp_parametros.csv"},
+    {"nombre": "Revisando excluidos",
+     "scripts": ("revisaexcluidos.py", "repetidosexclu.py"), "peso": 0.075},
+    {"nombre": "Revisando repetidos",
+     "scripts": ("repetidos.py",), "peso": 0.115},
+    {"nombre": "Generando panel de Seisan",
+     "scripts": ("generajson.py",), "peso": 0.06,
+     "discriminador": "salida_collect.csv"},
+    {"nombre": "Generando panel de eventquery",
+     "scripts": ("generajson.py",), "peso": 0.06,
+     "discriminador": "todos_eventquery.csv"},
+    {"nombre": "Generando panel de SeisComp",
+     "scripts": ("generajson.py",), "peso": 0.06,
+     "discriminador": "seiscomp_parametros.csv"},
+    {"nombre": "Generando panel de no publicados",
+     "scripts": ("generajson.py",), "peso": 0.035,
+     "discriminador": "no_pub_desde_2_5_estricto.csv"},
+    {"nombre": "Generando panel de no publicados de SeisComp",
+     "scripts": ("generajson.py",), "peso": 0.035,
+     "discriminador": "no_pub_desde_2_5_seiscomp_estricto.csv"},
+]
+
+# Etiqueta y estilo de cada estado de catálogo, para los chips y el aviso.
+# - ok: al día.
+# - fallo: la extracción falló (vino en la lista de fallantes).
+# - falta: el archivo no está, sin una falla reportada (se borró o similar).
+# - cambio: el insumo es más nuevo que el derivado.
+ESTADOS_CATALOGO = {
+    "ok": ("✓ OK", "success"),
+    "fallo": ("✗ falló", "danger"),
+    "falta": ("✗ falta", "danger"),
+    "cambio": ("⚠ cambió", "warning"),
+}
+
+
 class App:
-    def __init__(self, raiz, archivo, salida):
+    def __init__(self, raiz, archivo, salida, estado=None):
         self.raiz = raiz
         self.archivo = archivo
         self.salida = salida
         self.base = os.path.basename(archivo) if archivo else ""
         self.cwd = os.getcwd()
+        # Estado que dejó solicita_catalogos.py: período y catálogos que no se
+        # pudieron obtener. Puede venir vacío (modo antiguo o arranque directo).
+        estado = estado or {}
+        self.periodo = (estado.get("inicio"), estado.get("fin"))
+        self.catalogos_faltantes = set(estado.get("faltantes", []))
+        self.detalles_faltantes = estado.get("detalles", {}) or {}
         self.cola = queue.Queue()
         self.ocupado = False
         self.analisis_hecho = False
@@ -207,24 +289,37 @@ class App:
         self._tamanio = TAMANIO_INICIAL
         # Panel de cada vista: {"frame", "placeholder", "construido"}.
         self.paneles = {}
-        # Botón de «Procesar fuente» por vista, para apagarlo si ya está hecha.
-        self.botones_fuente_por_clave = {}
         self.ultima_fuente = None
         self.plan_etapas = None
         self.etapa_base = 0.0
         self.etapa_ancho = 1.0
         self.etapa_nombre = ""
 
+        # Ids de los after pendientes, para cancelarlos al salir y que Tk no
+        # intente ejecutarlos con la raíz ya destruida (bgerror en la consola).
+        self._after_drenar = None
+        self._after_msg = None
         self._construir()
-        self._autodetectar_analisis()
+        self._autodetectar_estado()
         self.raiz.protocol("WM_DELETE_WINDOW", self._salir_app)
-        self.raiz.after(100, self._drenar)
+        self._after_drenar = self.raiz.after(100, self._drenar)
         # La exportación de SeisComp la deja la solicitud de catálogos antes
-        # de llegar acá, y su pestaña se llena recién al terminar «Ejecutar
-        # análisis», igual que las de Seisan y eventquery.
+        # de llegar acá, y su pestaña se llena al procesar los catálogos,
+        # igual que las de Seisan y eventquery.
 
     def _salir_app(self):
         """Cierra las figuras de matplotlib y luego la ventana principal."""
+        # Cancelar los after pendientes ANTES de destruir la raíz: si no, Tk
+        # intenta ejecutarlos cuando el intérprete ya no existe y ensucia la
+        # consola con un bgerror ("invalid command name ..._drenar").
+        for ident in (self._after_drenar, self._after_msg):
+            if ident is not None:
+                try:
+                    self.raiz.after_cancel(ident)
+                except Exception:
+                    pass
+        self._after_drenar = None
+        self._after_msg = None
         try:
             import matplotlib.pyplot as plt
             plt.close("all")
@@ -263,39 +358,52 @@ class App:
         barra = ttk.Frame(cuerpo)
         barra.pack(side=LEFT, fill=Y, padx=(0, 12))
 
-        ttk.Label(barra, text="ACCIONES",
-                  bootstyle="secondary").pack(anchor=W, pady=(0, 4))
-        self.boton_analisis = self._boton(barra, "Ejecutar análisis",
-                                          self._accion_analisis,
+        self._encabezado(barra, "PROCESAR")
+        self.boton_analisis = self._boton(barra, "Procesar catálogos",
+                                          self._accion_procesar,
                                           bootstyle="primary")
         self.botones.remove(self.boton_analisis)
         self.etiqueta_estado = ttk.Label(barra, text="",
                                          bootstyle="warning")
-        self.etiqueta_estado.pack(anchor=W, pady=(2, 6))
+        self.etiqueta_estado.pack(anchor=W, pady=(2, 2))
+        # Aviso del estado de los catálogos (se refresca en
+        # _actualizar_estado_catalogos): dice cuáles están OK, cuáles fallaron,
+        # cuáles faltan y cuáles cambiaron.
+        self.aviso_catalogos = ttk.Label(barra, text="", bootstyle="secondary",
+                                         wraplength=230, justify=LEFT)
+        self.aviso_catalogos.pack(anchor=W, pady=(0, 6))
+
+        self._separador(barra)
+        self._encabezado(barra, "CONSULTAR")
+        # Ver repetidos y los listados de no publicados van juntos: son
+        # informes de texto/tabla, no los mapas de las pestañas.
         self._boton(barra, "Ver repetidos", self._ver_repetidos, gated=True)
+        self._boton(barra, "No publicados de Seisan",
+                    lambda: self._ver_no_publicados("seisan"), gated=True)
+        self._boton(barra, "No publicados de SeisComp",
+                    lambda: self._ver_no_publicados("seiscomp"), gated=True)
 
-        ttk.Separator(barra, orient=HORIZONTAL).pack(fill=X, pady=10)
-        ttk.Label(barra, text="PROCESAR FUENTE",
-                  bootstyle="secondary").pack(anchor=W, pady=(0, 4))
-        fuentes_botones = (
-            ("Datos de Seisan", "seisan"),
-            ("Datos de eventquery", "eventquery"),
-            ("Datos de SeisComp", "seiscomp"),
-            ("No publicados de seisan", "nopub"),
-            # El cruce contra eventquery ya existe: compara.py lo corre también
-            # sobre las soluciones preferred de SeisComp, con el prefijo
-            # seiscomp_. Sigue con compuerta porque sin análisis no hay con qué
-            # contrastar.
-            ("No publicados de SeisComp", "nopub_seiscomp"),
-        )
-        for texto, clave in fuentes_botones:
-            b = self._boton(barra, texto,
-                            lambda c=clave: self._accion_fuente(c), gated=True)
-            vista_clave = FUENTE_A_VISTA[clave]
-            self.botones_fuente_por_clave[vista_clave] = b
-            self._tooltip(b, lambda v=vista_clave: self._motivo_fuente_lista(v))
+        self._separador(barra)
+        self._encabezado(barra, "RE-EXPORTAR")
+        # Cada fila: el botón del catálogo y, a la derecha, un chip con su
+        # estado. Solo se habilita el botón del catálogo que falló, falta o
+        # cambió; el chip explica el estado de los tres.
+        self.botones_reexportar = {}
+        self.chips_catalogo = {}
+        for catalogo in ("Seisan", "eventquery", "SeisComp"):
+            fila = ttk.Frame(barra)
+            fila.pack(fill=X)
+            chip = ttk.Label(fila, text="", width=9, anchor=E)
+            chip.pack(side=RIGHT)
+            b = self._boton(
+                fila, catalogo,
+                lambda c=catalogo: self._re_exportar(c),
+                condicion=(lambda c=catalogo: self._puede_re_exportar(c),
+                           lambda c=catalogo: self._motivo_re_exportar(c)))
+            self.botones_reexportar[catalogo] = b
+            self.chips_catalogo[catalogo] = chip
 
-        ttk.Separator(barra, orient=HORIZONTAL).pack(fill=X, pady=10)
+        self._separador(barra)
         self._boton(barra, "Salir", self._salir_app, bootstyle="danger")
 
         # --- Contenido (pestañas) ---
@@ -322,7 +430,8 @@ class App:
             self.cuaderno.add(marco, text=vista["tab"])
             etiqueta = ttk.Label(
                 marco, justify=CENTER,
-                text="Genere esta fuente para ver aquí el panel de análisis.")
+                text="No hay datos de esta fuente para mostrar.\n\nPulse "
+                     "«Procesar catálogos» para generarlos.")
             etiqueta.pack(expand=YES)
             self.paneles[vista["clave"]] = {
                 "frame": marco,
@@ -344,7 +453,7 @@ class App:
             etiqueta = ttk.Label(
                 marco, justify=CENTER,
                 text=("No hay datos de %s para mostrar.\n\n"
-                      "Ejecute «Ejecutar análisis» para generarlos."
+                      "Pulse «Procesar catálogos» para generarlos."
                       % titulo))
             etiqueta.pack(expand=YES)
             self.catalogos[clave] = {"frame": marco, "titulo": titulo,
@@ -365,7 +474,7 @@ class App:
             etiqueta_noact = ttk.Label(
                 marco, justify=CENTER,
                 text=("Todavía no hay nada para mostrar.\n\n"
-                      "Ejecute «Ejecutar análisis» para generarlo."))
+                      "Pulse «Procesar catálogos» para generarlo."))
             etiqueta_noact.pack(expand=YES)
             self.noact[fuente] = {"frame": marco, "etiqueta": etiqueta_noact,
                                   "construido": False}
@@ -403,7 +512,7 @@ class App:
         # que no quede ningún botón de la barra sin resaltar.
         self._marcar_pestana_activa()
         # Y se baja la barra para que «Registro» quede a la altura de
-        # «Ejecutar análisis». Se mide al mapear la ventana (ver _alinear).
+        # «Procesar catálogos». Se mide al mapear la ventana (ver _alinear).
         self.raiz.bind("<Map>", self._alinear_pestanas, add="+")
         # Con el contenido del registro el tamaño inicial alcanza y la ventana
         # no se toca; el ajuste importa cuando aparece algo más ancho, como el
@@ -428,11 +537,11 @@ class App:
         self._log("Ventana ajustada a %dx%d px." % nuevo)
 
     def _alinear_pestanas(self, _evento=None):
-        """Baja la barra de pestañas hasta la altura del botón de análisis.
+        """Baja la barra de pestañas hasta la altura del botón de procesar.
 
         «Registro» arrancaba en el tope del área de contenido, arriba de donde
-        arranca la barra lateral, y quedaba desfasado respecto de «Ejecutar
-        análisis». Se mide el desfasaje real en vez de escribir un número fijo
+        arranca la barra lateral, y quedaba desfasado respecto de «Procesar
+        catálogos». Se mide el desfasaje real en vez de escribir un número fijo
         para que siga valiendo si cambia el tema o la fuente; el cálculo es
         idempotente, así que un re-mapeo de la ventana no lo descoloca.
         """
@@ -516,6 +625,14 @@ class App:
             boton.configure(bootstyle="primary" if activo
                             else "secondary-outline")
 
+    def _encabezado(self, marco, texto):
+        """Rótulo de un bloque de la barra lateral."""
+        ttk.Label(marco, text=texto, bootstyle="secondary").pack(
+            anchor=W, pady=(0, 4))
+
+    def _separador(self, marco):
+        ttk.Separator(marco, orient=HORIZONTAL).pack(fill=X, pady=10)
+
     def _boton(self, marco, texto, fn, bootstyle=DEFAULT, disabled=False,
                gated=False, condicion=None):
         b = ttk.Button(marco, text=texto, command=fn, bootstyle=bootstyle,
@@ -560,7 +677,7 @@ class App:
                                          parent=self.raiz)
         except queue.Empty:
             pass
-        self.raiz.after(100, self._drenar)
+        self._after_drenar = self.raiz.after(100, self._drenar)
 
     def _set_ocupado(self, valor):
         self.ocupado = valor
@@ -574,24 +691,252 @@ class App:
             estado_fuente = DISABLED
         else:
             estado_fuente = NORMAL if self.analisis_hecho else DISABLED
-        # El análisis se puede volver a ejecutar siempre que la app esté libre,
-        # incluso si ya se hizo: es lo que hace falta para rehacer una fuente
-        # que quedó procesada, y lo que el tooltip de esas fuentes indica. Antes
-        # se apagaba en cuanto había análisis hecho y las dos cosas se
-        # contradecían: el botón apagado y el texto que mandaba a pulsarlo.
+        # «Procesar catálogos» solo se habilita si están los insumos mínimos
+        # (el CSV de eventquery y select.out). Si falta alguno, se avisa en la
+        # barra y se re-exporta.
         self.boton_analisis.configure(
-            state=DISABLED if self.ocupado else NORMAL)
+            state=DISABLED if (self.ocupado or not self._puede_procesar())
+            else NORMAL)
         for b in self.botones_fuente:
             b.configure(state=estado_fuente)
-        # Una fuente ya procesada se apaga aunque haya análisis: su JSON es más
-        # nuevo que el CSV del que sale, así que rehacerla daría el mismo panel.
-        # Al cambiar el CSV (nuevo análisis) vuelve sola a NORMAL.
-        for clave, b in self.botones_fuente_por_clave.items():
-            if self._vista_procesada(clave):
-                b.configure(state=DISABLED)
         for b, puede, _ in self.condiciones:
             b.configure(state=(NORMAL if puede() and not self.ocupado
                                else DISABLED))
+        self._actualizar_estado_catalogos()
+
+    # ----------------------------------------------------------- catálogos
+    def _puede_procesar(self):
+        """Si están los insumos mínimos para correr el análisis."""
+        if not self.archivo or not os.path.isfile(self.archivo):
+            return False
+        return os.path.isfile(os.path.join("select.out"))
+
+    def _analisis_obsoleto(self):
+        """
+        True si el análisis quedó viejo respecto de sus catálogos de entrada.
+
+        Se re-exportó el select (o el CSV de eventquery) después del último
+        análisis: los paneles no deben mostrar los datos viejos como si fueran
+        actuales.
+        """
+        salida = os.path.join("datos", "salida_collect.csv")
+        if not os.path.isfile(salida):
+            return False
+        try:
+            mtime = os.path.getmtime(salida)
+        except OSError:
+            return False
+        select = os.path.join("select.out")
+        if os.path.isfile(select) and os.path.getmtime(select) > mtime:
+            return True
+        new2 = os.path.join("datos", "new_2_" + self.base)
+        if (self.archivo and os.path.isfile(self.archivo)
+                and os.path.isfile(new2)
+                and os.path.getmtime(self.archivo) > os.path.getmtime(new2)):
+            return True
+        return False
+
+    def _periodo(self):
+        """(inicio, fin) en 14 dígitos, del estado o inferido de los nombres."""
+        inicio, fin = self.periodo
+        if inicio and fin:
+            return inicio, fin
+        import glob
+        import re
+        for patron in ("select_*_*.out", "eventquery_*_*.csv"):
+            for ruta in sorted(glob.glob(patron)):
+                m = re.match(r".*_(\d{14})_(\d{14})\.[^.]+$",
+                             os.path.basename(ruta))
+                if m:
+                    return m.group(1), m.group(2)
+        return None, None
+
+    def _estado_catalogo(self, catalogo):
+        """'ok', 'fallo', 'falta' o 'cambio' para el catálogo pedido."""
+        if catalogo == "Seisan":
+            insumo = "select.out"
+            derivado = os.path.join("datos", "salida_collect.csv")
+        elif catalogo == "eventquery":
+            insumo = self.archivo
+            derivado = os.path.join("datos", "new_2_" + self.base)
+        elif catalogo == "SeisComp":
+            par = self._par_seiscomp_para_catalogo(silencioso=True)
+            insumo = par["eventos"] if par is not None else None
+            derivado = os.path.join("datos", "seiscomp_parametros.csv")
+        else:
+            return "ok"
+        if not insumo or not os.path.isfile(insumo):
+            # No está: si la extracción de esta sesión lo reportó como fallante,
+            # fue un fallo; si no, simplemente no está (se borró o similar).
+            return "fallo" if catalogo in self.catalogos_faltantes else "falta"
+        # Sin derivado todavía, el análisis no corrió: el catálogo está, no hay
+        # nada que re-exportar. Solo es "cambio" si el insumo es más nuevo que
+        # un derivado que ya existía.
+        if not os.path.isfile(derivado):
+            return "ok"
+        try:
+            return ("cambio" if os.path.getmtime(insumo)
+                    > os.path.getmtime(derivado) else "ok")
+        except OSError:
+            return "ok"
+
+    def _puede_re_exportar(self, catalogo):
+        return self._estado_catalogo(catalogo) != "ok"
+
+    def _motivo_re_exportar(self, catalogo):
+        estado = self._estado_catalogo(catalogo)
+        if estado == "fallo":
+            return ("La extracción de %s falló. Use este botón para volver a "
+                    "intentarlo." % catalogo)
+        if estado == "falta":
+            return ("El catálogo de %s no está (¿se borró?). Use este botón "
+                    "para volver a obtenerlo." % catalogo)
+        if estado == "cambio":
+            return ("%s cambió desde el último procesamiento. Re-expórtelo y "
+                    "vuelva a procesar." % catalogo)
+        return ("El catálogo de %s está al día; no hace falta re-exportarlo."
+                % catalogo)
+
+    def _actualizar_estado_catalogos(self):
+        """Refresca los chips por catálogo y el aviso resumen."""
+        for catalogo, chip in self.chips_catalogo.items():
+            texto, estilo = ESTADOS_CATALOGO[self._estado_catalogo(catalogo)]
+            chip.configure(text=texto, bootstyle=estilo)
+        partes = []
+        for catalogo in ("Seisan", "eventquery", "SeisComp"):
+            estado = self._estado_catalogo(catalogo)
+            if estado == "ok":
+                continue
+            texto, _ = ESTADOS_CATALOGO[estado]
+            partes.append("%s: %s" % (texto, catalogo))
+        if not partes:
+            self.aviso_catalogos.configure(text="✓ Catálogos OK.",
+                                           bootstyle="success")
+            return
+        estilo = "danger" if any("✗" in p for p in partes) else "warning"
+        self.aviso_catalogos.configure(text=" · ".join(partes),
+                                       bootstyle=estilo)
+
+    def _re_exportar(self, catalogo):
+        """Vuelve a obtener el catálogo que falta o cambió."""
+        if self.ocupado:
+            return
+        if catalogo == "SeisComp":
+            def tarea():
+                self._tarea_re_exportar_seiscomp()
+                # Refresca el panel con la exportación recién escrita.
+                self._procesar_fuente("seiscomp")
+        else:
+            contrasena = self._pedir_contrasena()
+            if not contrasena:
+                self._log("Re-exportación cancelada.")
+                return
+            tarea = (lambda c=catalogo, p=contrasena:
+                     self._tarea_re_exportar_red(c, p))
+
+        def al_terminar():
+            self.catalogos_faltantes.discard(catalogo)
+            self._actualizar_gate()
+            if catalogo in ("Seisan", "eventquery"):
+                # El análisis quedó obsoleto: hay que reprocesar.
+                self._ofrecer_procesar(catalogo)
+            else:
+                self._abrir_panel_si_puede("seiscomp")
+
+        self._iniciar(tarea, on_fin=al_terminar, plan=None)
+
+    def _tarea_re_exportar_seiscomp(self):
+        inicio, fin = self._periodo()
+        if not (inicio and fin):
+            self._log("No se pudo determinar el período a exportar.")
+            return
+        self._log("***** Re-exportando SeisComp (%s - %s) *****"
+                  % (inicio, fin))
+        if self._popen([_script("verifica_entorno.py")]):
+            self._log("El entorno no está listo; no se exportó SeisComp.")
+            return
+        exportador = _script("exporta_ventana_seiscomp.py")
+        if self._popen([exportador, "--reusar", inicio, fin]):
+            self._log("La exportación de SeisComp falló (ver el registro).")
+            return
+        self._log("SeisComp re-exportado.")
+
+    def _tarea_re_exportar_red(self, catalogo, contrasena):
+        import traer_catalogos as tc
+        inicio, fin = self._periodo()
+        if not (inicio and fin):
+            self._log("No se pudo determinar el período a re-exportar.")
+            return
+        self._log("***** Re-exportando %s (%s - %s) *****"
+                  % (catalogo, inicio, fin))
+        with tc.Conexion(contrasena, log=self._log) as conexion:
+            tc.verificar_conexion(conexion, log=self._log,
+                                  progreso=self._progreso_local)
+            if catalogo == "Seisan":
+                ruta = tc.traer_seisan(inicio, fin, conexion, cwd=self.cwd,
+                                       log=self._log,
+                                       progreso=self._progreso_local,
+                                       forzar=True)
+                # copy2 preserva la fecha del select recién bajado; copyfile
+                # la pondría en "ahora" y select.out parecería más nuevo.
+                shutil.copy2(ruta, os.path.join(self.cwd, "select.out"))
+                self._log("select.out actualizado desde %s"
+                          % os.path.basename(ruta))
+            else:
+                tc.traer_eventquery(inicio, fin, conexion, cwd=self.cwd,
+                                    log=self._log,
+                                    progreso=self._progreso_local,
+                                    forzar=True)
+        self._log("%s re-exportado." % catalogo)
+
+    def _pedir_contrasena(self):
+        """Diálogo simple para la contraseña del servidor remoto."""
+        top = Toplevel(self.raiz)
+        top.title("Contraseña del servidor")
+        top.transient(self.raiz)
+        top.grab_set()
+        marco = ttk.Frame(top, padding=12)
+        marco.pack(fill=BOTH, expand=YES)
+        ttk.Label(marco, text="Contraseña del servidor remoto:").pack(anchor=W)
+        entrada = ttk.Entry(marco, show="*", width=28)
+        entrada.pack(fill=X, pady=(4, 10))
+        entrada.focus_set()
+        resultado = {"valor": None}
+
+        def aceptar(_evento=None):
+            resultado["valor"] = entrada.get()
+            top.destroy()
+
+        def cancelar(_evento=None):
+            top.destroy()
+
+        botones = ttk.Frame(marco)
+        botones.pack(fill=X)
+        ttk.Button(botones, text="Aceptar", command=aceptar,
+                   bootstyle="primary").pack(side=RIGHT)
+        ttk.Button(botones, text="Cancelar", command=cancelar,
+                   bootstyle="secondary").pack(side=RIGHT, padx=(0, 6))
+        entrada.bind("<Return>", aceptar)
+        top.bind("<Escape>", cancelar)
+        self.raiz.wait_window(top)
+        return resultado["valor"]
+
+    def _ofrecer_procesar(self, catalogo):
+        """Ofrece (imponiendo) reprocesar tras re-exportar un catálogo."""
+        texto = ("Se actualizó %s.\n\nHay que volver a procesar los catálogos "
+                 "para que el análisis y los paneles usen los datos nuevos. "
+                 "Hasta entonces, los resultados anteriores no se muestran.\n\n"
+                 "¿Procesar ahora?" % catalogo)
+        if Messagebox.show_question(texto, "Reprocesar catálogos",
+                                    parent=self.raiz,
+                                    buttons=["Procesar:primary",
+                                             "Más tarde"]) == "Procesar":
+            self._accion_procesar()
+        else:
+            self._log("Pendiente: pulse «Procesar catálogos» para aplicar %s."
+                      % catalogo)
+            self._actualizar_estado()
+            self._actualizar_gate()
 
     def _tooltip(self, widget, motivo):
         """
@@ -602,8 +947,14 @@ class App:
         líneas de Toplevel en vez de un import.
 
         El motivo se evalúa al entrar, no al crear el widget: depende del
-        estado de los archivos y cambia con el correr del tiempo.
+        estado de los archivos y cambia con el correr del tiempo. Se acepta
+        tanto una función como un texto fijo, para que un motivo constante (o
+        vacío) no se intente llamar como función.
         """
+        if not callable(motivo):
+            fijo = motivo
+            motivo = lambda: fijo
+
         def entrar(_evento=None):
             if widget.instate(["disabled"]):
                 texto = motivo()
@@ -660,22 +1011,83 @@ class App:
     def _actualizar_estado(self):
         if self.analisis_en_curso:
             self.etiqueta_estado.configure(
-                text="Análisis: en curso…", bootstyle="warning")
+                text="Catálogos: procesando…", bootstyle="warning")
         elif self.analisis_hecho:
             self.etiqueta_estado.configure(
-                text="Análisis: realizado", bootstyle="success")
+                text="Catálogos: procesados", bootstyle="success")
         else:
             self.etiqueta_estado.configure(
-                text="Análisis: pendiente", bootstyle="secondary")
+                text="Catálogos: sin procesar", bootstyle="secondary")
 
-    def _autodetectar_analisis(self):
-        self.analisis_hecho = os.path.isfile(
-            os.path.join("datos", "salida_collect.csv"))
+    def _autodetectar_estado(self):
+        """
+        Reconoce en el directorio de ejecución qué pestañas pueden mostrarse.
+
+        No genera nada: deja cada panel en su placeholder correcto (con datos,
+        pendiente de procesar o sin datos) y registra el resumen. La generación
+        de los pendientes es perezosa, al abrir su pestaña (ver
+        _abrir_panel_si_puede).
+        """
+        obsoleto = self._analisis_obsoleto()
+        self.analisis_hecho = (
+            os.path.isfile(os.path.join("datos", "salida_collect.csv"))
+            and not obsoleto)
+        listas, pendientes = [], []
+        for clave, vista in VISTAS_POR_CLAVE.items():
+            if obsoleto:
+                self._placeholder_panel(
+                    clave, "Los catálogos cambiaron desde el último "
+                           "análisis.\n\nPulse «Procesar catálogos» para "
+                           "regenerar el panel de %s." % vista["etiqueta"])
+            elif self._vista_procesada(clave):
+                listas.append(clave)
+                self._placeholder_panel(
+                    clave, "Hay datos procesados de %s.\n\nAbra la pestaña "
+                           "para verlos." % vista["etiqueta"])
+            elif os.path.isfile(vista["entrada"]):
+                pendientes.append(clave)
+                self._placeholder_panel(
+                    clave, "Hay datos sin procesar de %s.\n\nAl abrir esta "
+                           "pestaña se genera el panel."
+                           % vista["etiqueta"])
+            else:
+                self._placeholder_panel(
+                    clave, "No hay datos de %s para mostrar.\n\nPulse "
+                           "«Procesar catálogos» para generarlos."
+                           % vista["etiqueta"])
+        if obsoleto:
+            self._log("El análisis quedó obsoleto (los catálogos son más "
+                      "nuevos); vuelva a «Procesar catálogos».")
+        if listas:
+            self._log("Paneles ya procesados: %s." % ", ".join(listas))
+        if pendientes:
+            self._log("Paneles pendientes (se generan al abrir su pestaña): "
+                      "%s." % ", ".join(pendientes))
         if self.analisis_hecho:
-            self._log("Se detectaron resultados del análisis; "
-                      "fuentes habilitadas.")
+            self._log("Se detectaron resultados del análisis; fuentes "
+                      "habilitadas.")
+        if self.catalogos_faltantes:
+            faltan = ", ".join(sorted(self.catalogos_faltantes))
+            self._log("***** Faltan catálogos: %s. Use «Re-exportar». *****"
+                      % faltan)
+            self._after_msg = self.raiz.after(300, lambda: Messagebox.show_warning(
+                "No se pudieron obtener: %s.\n\nUse «Re-exportar» para "
+                "volver a intentarlo." % faltan,
+                "Catálogos faltantes", parent=self.raiz))
         self._actualizar_estado()
         self._actualizar_gate()
+
+    def _placeholder_panel(self, clave, texto):
+        """Deja el placeholder de un panel con el texto dado."""
+        panel = self.paneles.get(clave)
+        if panel is None:
+            return
+        for w in list(panel["frame"].winfo_children()):
+            w.destroy()
+        etiqueta = ttk.Label(panel["frame"], justify=CENTER, text=texto)
+        etiqueta.pack(expand=YES)
+        panel["etiqueta"] = etiqueta
+        panel["construido"] = False
 
     def _vista_procesada(self, clave):
         """
@@ -685,41 +1097,38 @@ class App:
         JSON siga siendo el resultado del CSV actual, reprocesar daría el mismo
         panel. Cuando el análisis reescribe el CSV, el botón se enciende solo.
         """
+        if self._analisis_obsoleto():
+            return False
         vista = VISTAS_POR_CLAVE.get(clave)
         if vista is None:
             return False
         json_path = os.path.join("datos", "eventos_%s.json" % clave)
+        if not os.path.isfile(json_path):
+            return False
+        if clave == "eventquery":
+            # El CSV derivado (todos_eventquery.csv) no lo refresca el análisis,
+            # lo arma _concatenar_eventquery. La frescura hay que medirla contra
+            # los new_2_*.csv, que sí cambian con cada análisis: si no, un JSON
+            # viejo parecería al día y el panel quedaría con datos de menos.
+            entradas = self._partes_eventquery()
+            if not entradas:
+                return False
+            mas_nuevo = max(os.path.getmtime(r) for r in entradas)
+            return os.path.getmtime(json_path) >= mas_nuevo
         entrada = vista["entrada"]
-        if not (os.path.isfile(json_path) and os.path.isfile(entrada)):
+        if not os.path.isfile(entrada):
             return False
         return os.path.getmtime(json_path) >= os.path.getmtime(entrada)
 
-    def _motivo_fuente_lista(self, clave):
-        if not self._vista_procesada(clave):
-            return ""
-        vista = VISTAS_POR_CLAVE[clave]
-        # El texto dice el estado y las dos cosas que se pueden hacer con él,
-        # sin dar por hecho en qué estado esté el otro botón: ver el panel en su
-        # pestaña, o rehacer la fuente volviendo a ejecutar el análisis.
-        return ("Ya se procesó esta fuente: eventos_%s.json es más nuevo que "
-                "%s.\n\nSu panel está en la pestaña «%s». Para rehacerla, "
-                "vuelva a ejecutar el análisis."
-                % (clave, os.path.basename(vista["entrada"]),
-                   self._ruta_de_pestana(clave)))
-
-    def _ruta_de_pestana(self, clave):
-        """«Grupo · Botón» de la pestaña de una vista.
-
-        Hace falta porque el botón del panel de Seisan y el de los no
-        publicados de Seisan se llaman los dos «Seisan»: sin el grupo, el
-        tooltip apuntaría a la pestaña equivocada.
-        """
-        etiqueta = VISTAS_POR_CLAVE.get(clave, {}).get("tab", clave)
-        for grupo in GRUPOS_PESTANAS:
-            if "panel:%s" % clave in grupo.get("pestanas", ()):
-                titulo = grupo.get("titulo")
-                return "%s · %s" % (titulo, etiqueta) if titulo else etiqueta
-        return etiqueta
+    @staticmethod
+    def _partes_eventquery(carpeta="datos"):
+        """Rutas de los new_2_*.csv, ordenadas, o [] si no hay."""
+        try:
+            nombres = sorted(n for n in os.listdir(carpeta)
+                             if n.startswith("new_2_") and n.endswith(".csv"))
+        except OSError:
+            return []
+        return [os.path.join(carpeta, n) for n in nombres]
 
     # ------------------------------------------------------------- progreso
     def _aplicar_progreso(self, fraccion, texto):
@@ -761,10 +1170,16 @@ class App:
         # no se sabe cuál de las dos es: se ganaría siempre la primera.
         for i, e in enumerate(etapas):
             marca = e.get("discriminador")
-            # any(...) y no `marca in argumentos`: los argumentos llegan como
-            # rutas completas ("datos/seiscomp_parametros.csv"), así que tiene
-            # que ser coincidencia parcial y no igualdad de elemento.
-            if marca is not None and any(marca in str(a) for a in argumentos):
+            # El script también tiene que coincidir: si no, un discriminator
+            # como "salida_collect.csv" lo ganaría cualquier etapa cuyo script
+            # reciba ese archivo (p. ej. compara.py), no solo la buscada.
+            if (marca is not None
+                    and nombre_script in e.get("scripts", ())
+                    # any(...) y no `marca in argumentos`: los argumentos llegan
+                    # como rutas completas ("datos/seiscomp_parametros.csv"),
+                    # así que tiene que ser coincidencia parcial y no igualdad
+                    # de elemento.
+                    and any(marca in str(a) for a in argumentos)):
                 self._fijar_etapa(i)
                 return
         for i, e in enumerate(etapas):
@@ -827,101 +1242,133 @@ class App:
         threading.Thread(target=envolver, daemon=True).start()
 
     # ------------------------------------------------------------ acciones
-    def _accion_analisis(self):
+    def _procesar_analisis(self):
+        """
+        Pipeline pesado de análisis. Síncrono: corre dentro de una tarea.
+
+        No pregunta nada ni toca el estado de la app; de eso se encargan los
+        envoltorios (_accion_procesar y _accion_fuente).
+        """
+        self._log("***** Se comienza el análisis de los datos *****")
+        self._popen([_script("proc_query_harz_2.py"),
+                     self.archivo, self.salida])
+        self._popen([_script("revisaselect.py")])
+        self._popen([_script("revisacollect.py")])
+        self._log("***** Comparando publicados v/s procesados *****")
+        self._popen([_script("compara.py"),
+                     os.path.join("datos", "new_2_" + self.base),
+                     os.path.join("datos", "salida_collect.csv")])
+        # La atribución a SeisComp es la misma comparación con las soluciones
+        # preferred en vez de las de Seisan: deja en no_act_seiscomp_*.txt qué
+        # publicado quedó desactualizado y a quién le corresponde. Se saltea si
+        # no hay exportación, porque la ventana del catálogo puede no haberse
+        # descargado nunca.
+        parametros = os.path.join("datos", "seiscomp_parametros.csv")
+        self._asegurar_parametros_seiscomp()
+        if os.path.isfile(parametros) and os.path.getsize(parametros) > 0:
+            self._log("***** Atribuyendo publicados a SeisComp *****")
+            self._popen([_script("compara.py"),
+                         os.path.join("datos", "new_2_" + self.base),
+                         parametros, "seiscomp_"])
+        else:
+            self._log("Sin datos de SeisComp: se omite la atribución.")
+        excl = os.path.join("informes", "excluidos.txt")
+        if os.path.isfile(excl) and os.path.getsize(excl) > 0:
+            self._log("***** Revisando excluidos *****")
+            self._popen([_script("revisaexcluidos.py")])
+            self._popen([_script("repetidosexclu.py"),
+                         os.path.join("datos", "excluidos.csv"),
+                         os.path.join("datos", "salida_collect.csv")])
+        else:
+            for f in (excl, os.path.join("trabajo", "excluidostmp1.txt")):
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
+            self._log("No se excluyeron eventos del select.out")
+        self._log("***** Se revisan repetidos *****")
+        args_repetidos = [_script("repetidos.py"),
+                          os.path.join("datos", "new_2_" + self.base),
+                          os.path.join("datos", "salida_collect.csv")]
+        # El catálogo de SeisComp se revisa con el mismo script: mismo layout de
+        # 8 columnas, así que solo hay que pasarle el CSV.
+        if os.path.isfile(parametros) and os.path.getsize(parametros) > 0:
+            args_repetidos.append(parametros)
+        self._popen(args_repetidos)
+        try:
+            os.remove(self.salida)
+        except OSError:
+            pass
+        self._log("***** Análisis terminado *****")
+
+    def _accion_procesar(self):
+        """
+        Botón maestro «Procesar catálogos».
+
+        Corre el análisis y, con los mismos catálogos ya en disco, genera el
+        JSON de todas las pestañas de panel y arma las de catálogo. Una sola
+        pulsación deja toda la información disponible para consultar; las
+        fuentes que ya estaban al día se omiten, así que volver a pulsarlo
+        rehace solo lo vencido.
+        """
         if not self.archivo:
             self._log("No se especificó archivo de entrada.")
             return
-        # Volver a ejecutarlo es una acción legítima (es lo que hace falta para
-        # rehacer una fuente ya procesada) pero son minutos de trabajo, así que
-        # se pregunta antes. El botón queda habilitado siempre, con la
-        # compuerta aprovando que se vuelva a pulsar.
-        if self.analisis_hecho:
-            texto = ("Volver a ejecutar el análisis va a regenerar los datos "
-                     "de %s.\n\nLas fuentes que ya estaban procesadas "
-                     "vuelven a quedar para rehacer, porque su CSV de "
-                     "entrada cambió.\n\n¿Continuar?"
+        # Volver a ejecutarlo es una acción legítima pero son minutos de
+        # trabajo, así que se pregunta antes. El botón queda habilitado
+        # siempre, con la compuerta aprobando que se vuelva a pulsar. Si el
+        # análisis quedó obsoleto (se re-exportó un catálogo), no se pregunta:
+        # reprocesar es justamente lo que hay que hacer.
+        if self.analisis_hecho and not self._analisis_obsoleto():
+            texto = ("Volver a procesar los catálogos va a regenerar los "
+                     "datos de %s.\n\nLo que ya estaba procesado vuelve a "
+                     "quedar para rehacer, porque su CSV de entrada "
+                     "cambió.\n\n¿Continuar?"
                      % os.path.basename(self.archivo))
-            if Messagebox.show_question(texto, "Volver a ejecutar el análisis",
+            if Messagebox.show_question(texto, "Volver a procesar catálogos",
                                         parent=self.raiz,
-                                        buttons=["Ejecutar:primary",
-                                                 "Cancelar"]) != "Ejecutar":
-                self._log("Análisis cancelado.")
+                                        buttons=["Procesar:primary",
+                                                 "Cancelar"]) != "Procesar":
+                self._log("Procesamiento cancelado.")
                 return
 
         def tarea():
-            self._log("***** Se comienza el análisis de los datos *****")
-            self._popen([_script("proc_query_harz_2.py"),
-                         self.archivo, self.salida])
-            self._popen([_script("revisaselect.py")])
-            self._popen([_script("revisacollect.py")])
-            self._log("***** Comparando publicados v/s procesados *****")
-            self._popen([_script("compara.py"),
-                         os.path.join("datos", "new_2_" + self.base),
-                         os.path.join("datos", "salida_collect.csv")])
-            # La atribución a SeisComp es la misma comparación con las
-            # soluciones preferred en vez de las de Seisan: deja en
-            # no_act_seiscomp_*.txt qué publicado quedó desactualizado y a quién
-            # le corresponde. Se saltea si no hay exportación, porque la
-            # ventana del catálogo puede no haberse descargado nunca.
-            parametros = os.path.join("datos", "seiscomp_parametros.csv")
-            self._asegurar_parametros_seiscomp()
-            if os.path.isfile(parametros) and os.path.getsize(parametros) > 0:
-                self._log("***** Atribuyendo publicados a SeisComp *****")
-                self._popen([_script("compara.py"),
-                             os.path.join("datos", "new_2_" + self.base),
-                             parametros, "seiscomp_"])
-            else:
-                self._log("Sin datos de SeisComp: se omite la atribución.")
-            excl = os.path.join("informes", "excluidos.txt")
-            if os.path.isfile(excl) and os.path.getsize(excl) > 0:
-                self._log("***** Revisando excluidos *****")
-                self._popen([_script("revisaexcluidos.py")])
-                self._popen([_script("repetidosexclu.py"),
-                             os.path.join("datos", "excluidos.csv"),
-                             os.path.join("datos", "salida_collect.csv")])
-            else:
-                for f in (excl, os.path.join("trabajo", "excluidostmp1.txt")):
-                    try:
-                        os.remove(f)
-                    except OSError:
-                        pass
-                self._log("No se excluyeron eventos del select.out")
-            self._log("***** Se revisan repetidos *****")
-            args_repetidos = [_script("repetidos.py"),
-                              os.path.join("datos", "new_2_" + self.base),
-                              os.path.join("datos", "salida_collect.csv")]
-            # El catálogo de SeisComp se revisa con el mismo script: mismo
-            # layout de 8 columnas, así que solo hay que pasarle el CSV.
-            if os.path.isfile(parametros) and os.path.getsize(parametros) > 0:
-                args_repetidos.append(parametros)
-            self._popen(args_repetidos)
-            try:
-                os.remove(self.salida)
-            except OSError:
-                pass
-            self._log("***** Análisis terminado *****")
+            self._procesar_analisis()
+            # SeisComp primero: deja seiscomp_parametros.csv, que la atribución
+            # de eventquery necesita. Si no hay exportación, _procesar_fuente lo
+            # avisa y sigue.
+            for fuente in ("seiscomp", "seisan", "eventquery", "nopub",
+                           "nopub_seiscomp"):
+                vista_clave = FUENTE_A_VISTA.get(fuente)
+                if vista_clave and self._vista_procesada(vista_clave):
+                    self._log("La fuente %s ya estaba procesada; se omite."
+                              % vista_clave)
+                    continue
+                self._procesar_fuente(fuente)
+            self._poblar_catalogos()
+            self._log("***** Procesamiento terminado *****")
 
         self.analisis_en_curso = True
         self._actualizar_estado()
-        self._iniciar(tarea, on_fin=self._al_terminar_analisis,
-                      plan=ANALISIS_PLAN)
+        self._iniciar(tarea, on_fin=self._al_terminar_procesar,
+                      plan=PROCESAR_PLAN)
 
-    def _al_terminar_analisis(self):
+    def _al_terminar_procesar(self):
         self.analisis_en_curso = False
         self.analisis_hecho = os.path.isfile(
             os.path.join("datos", "salida_collect.csv"))
         if self.analisis_hecho:
-            self._log("Análisis completado: ya puede procesar fuentes.")
-            self._poblar_catalogos()
+            self._log("Procesamiento completado: las pestañas ya tienen sus "
+                      "datos.")
         else:
-            self._log("El análisis no generó datos/salida_collect.csv; "
+            self._log("El procesamiento no generó datos/salida_collect.csv; "
                       "revise el registro.")
         self._actualizar_estado()
         self._actualizar_gate()
 
     def _poblar_catalogos(self):
         """
-        Llena las pestañas de catálogo cuando termina el análisis.
+        Llena las pestañas de catálogo al terminar «Procesar catálogos».
 
         Las tres salen del análisis: Seisan de salida_collect.csv, eventquery
         del concatenado de los new_2_*.csv y SeisComp de la exportación que
@@ -939,67 +1386,92 @@ class App:
         for clave in ("seisan", "eventquery", "seiscomp"):
             self._construir_catalogo(clave, seleccionar=False)
 
-    def _accion_fuente(self, fuente):
+    def _procesar_fuente(self, fuente):
+        """
+        Genera el JSON/panel de una fuente. Síncrono, sin envoltorio de tarea.
+
+        Devuelve True si dejó el JSON en disco. Lo comparten el botón maestro
+        («Procesar catálogos»), la re-exportación de SeisComp y la generación
+        perezosa al abrir una pestaña, para que no haya dos caminos que puedan
+        desincronizarse.
+        """
         # Cada fuente escribe su propio eventos_<vista>.json: los no publicados
         # comparten parseo con su fuente, pero no archivo de salida, así que
         # procesarlos no pisa el panel de la fuente principal.
         vista_clave = FUENTE_A_VISTA.get(fuente)
         if vista_clave not in VISTAS_POR_CLAVE:
+            return False
+        if fuente == "seisan":
+            self._popen([_script("generajson.py"),
+                         os.path.join("datos", "salida_collect.csv"),
+                         "seisan"])
+        elif fuente == "eventquery":
+            self._concatenar_eventquery()
+            self._asegurar_parametros_seiscomp()
+            self._atribuir_para_eventquery()
+            self._popen([_script("generajson.py"),
+                         os.path.join("datos", "todos_eventquery.csv"),
+                         "eventquery"])
+            # No se borra: es lo que lee la pestaña de catálogo de eventquery, y
+            # regenerarlo cuesta una pasada más. Es un derivado de los new_2_*,
+            # así que no puede quedar desactualizado sin que también lo estén
+            # ellos.
+        elif fuente == "seiscomp":
+            par = self._par_seiscomp_para_catalogo()
+            if par is None:
+                self._log("No hay una exportación de SeisComp que cubra "
+                          "este catálogo.")
+                return False
+            self._log("Usando %s" % os.path.basename(par["eventos"]))
+            # Idempotente: si el análisis ya dejó seiscomp_parametros.csv al
+            # día, no vuelve a convertir.
+            self._asegurar_parametros_seiscomp()
+            parametros = os.path.join("datos", "seiscomp_parametros.csv")
+            if not (os.path.isfile(parametros)
+                    and os.path.getsize(parametros) > 0):
+                self._log("La conversión falló; no se genera el JSON.")
+                return False
+            self._popen([_script("generajson.py"), parametros, "seiscomp"])
+        elif fuente in ("nopub", "nopub_seiscomp"):
+            # Los dos "no publicados" salen del mismo compara.py, cada uno con
+            # su prefijo, así que no se pisan entre ellos.
+            if fuente == "nopub_seiscomp":
+                archivo = os.path.join(
+                    "datos", "no_pub_desde_2_5_seiscomp_estricto.csv")
+                origen = "seiscomp"
+            else:
+                archivo = os.path.join("datos",
+                                       "no_pub_desde_2_5_estricto.csv")
+                origen = "seisan"
+            if not os.path.isfile(archivo):
+                self._log("No se encontró %s (procese los catálogos primero)."
+                          % archivo)
+                return False
+            # --salida evita que el JSON de los no publicados pise el de la
+            # fuente principal: comparten parseo, no archivo de salida.
+            self._popen([_script("generajson.py"), archivo, origen,
+                         "--salida=%s" % vista_clave])
+        else:
+            return False
+        json_path = os.path.join("datos", "eventos_%s.json" % vista_clave)
+        if os.path.isfile(json_path):
+            self._log("JSON generado: %s" % json_path)
+            return True
+        self._log("No se generó %s." % json_path)
+        return False
+
+    def _accion_fuente(self, fuente):
+        """Genera una fuente puntual en segundo plano (generación perezosa)."""
+        vista_clave = FUENTE_A_VISTA.get(fuente)
+        if vista_clave not in VISTAS_POR_CLAVE:
             return
 
         def tarea():
-            if fuente == "seisan":
-                self._popen([_script("generajson.py"),
-                             os.path.join("datos", "salida_collect.csv"),
-                             "seisan"])
-            elif fuente == "eventquery":
+            if fuente == "eventquery":
+                # La concatenación no tiene script que marque la etapa, así que
+                # se fija a mano (es la primera de FUENTE_PLAN).
                 self._fijar_etapa(0)
-                self._concatenar_eventquery()
-                self._asegurar_parametros_seiscomp()
-                self._atribuir_para_eventquery()
-                self._popen([_script("generajson.py"),
-                             os.path.join("datos", "todos_eventquery.csv"),
-                             "eventquery"])
-                # No se borra: es lo que lee la pestaña de catálogo de
-                # eventquery, y regenerarlo cuesta una pasada más. Es un
-                # derivado de los new_2_*, así que no puede quedar
-                # desactualizado sin que también lo estén ellos.
-            elif fuente == "seiscomp":
-                par = self._par_seiscomp_para_catalogo()
-                if par is None:
-                    self._log("No hay una exportación de SeisComp que cubra "
-                              "este catálogo.")
-                    return
-                self._log("Usando %s" % os.path.basename(par["eventos"]))
-                if self._popen([_script("seiscomp_a_parametros.py"),
-                                par["eventos"]]):
-                    self._log("La conversión falló; no se genera el JSON.")
-                    return
-                self._popen([_script("generajson.py"),
-                             os.path.join("datos", "seiscomp_parametros.csv"),
-                             "seiscomp"])
-            elif fuente in ("nopub", "nopub_seiscomp"):
-                # Los dos "no publicados" salen del mismo compara.py, cada uno
-                # con su prefijo, así que no se pisan entre ellos.
-                if fuente == "nopub_seiscomp":
-                    archivo = os.path.join(
-                        "datos", "no_pub_desde_2_5_seiscomp_estricto.csv")
-                    origen = "seiscomp"
-                else:
-                    archivo = os.path.join("datos",
-                                           "no_pub_desde_2_5_estricto.csv")
-                    origen = "seisan"
-                if not os.path.isfile(archivo):
-                    self._log("No se encontró %s (corra el análisis primero)."
-                              % archivo)
-                    return
-                # --salida evita que el JSON de los no publicados pise el de la
-                # fuente principal: comparten parseo, no archivo de salida.
-                self._popen([_script("generajson.py"), archivo, origen,
-                             "--salida=%s" % vista_clave])
-            else:
-                return
-            self._log("JSON generado: datos/eventos_%s.json" % vista_clave)
+            self._procesar_fuente(fuente)
 
         def al_terminar():
             self._abrir_panel_en_tab(vista_clave)
@@ -1028,15 +1500,9 @@ class App:
                 return None
             rutas = (par["eventos"], par["fases"])
         elif clave == "eventquery":
-            carpeta = os.path.join("datos")
-            try:
-                nombres = sorted(n for n in os.listdir(carpeta)
-                                 if n.startswith("new_2_") and n.endswith(".csv"))
-            except OSError:
+            rutas = self._partes_eventquery()
+            if not rutas:
                 return None
-            if not nombres:
-                return None
-            rutas = [os.path.join(carpeta, n) for n in nombres]
         else:
             ruta = os.path.join("datos", "salida_collect.csv")
             if not os.path.isfile(ruta):
@@ -1108,8 +1574,8 @@ class App:
             # abre en un solo paso, como el de Seisan.
             self._concatenar_eventquery()
         if not os.path.isfile(ruta):
-            self._log("No se encontró %s. Ejecute «Datos de %s» primero."
-                      % (ruta, "Seisan" if etiqueta == "seisan" else "eventquery"))
+            self._log("No se encontró %s. Pulse «Procesar catálogos» primero."
+                      % ruta)
             return
         for w in list(marco.winfo_children()):
             w.destroy()
@@ -1135,7 +1601,9 @@ class App:
 
         Hace falta porque el botón de una fuente ya procesada queda apagado, así
         que la pestaña es la única vía para volver a ver el panel (por ejemplo,
-        al reabrir la aplicación sobre una carpeta ya analizada).
+        al reabrir la aplicación sobre una carpeta ya analizada). Si el CSV de
+        entrada existe pero el JSON no (o quedó viejo), se genera acá en
+        segundo plano.
         """
         self._marcar_pestana_activa()
         actual = self.cuaderno.select()
@@ -1152,10 +1620,38 @@ class App:
         for clave, panel in self.paneles.items():
             if str(panel["frame"]) != actual:
                 continue
-            if os.path.isfile(os.path.join("datos",
-                                           "eventos_%s.json" % clave)):
-                self._abrir_panel_en_tab(clave)
+            self._abrir_panel_si_puede(clave)
             break
+
+    def _abrir_panel_si_puede(self, clave):
+        """
+        Abre el panel de una vista, generándolo si hace falta.
+
+        Si el JSON está al día, se muestra; si el CSV de entrada existe pero el
+        JSON falta o quedó viejo, se procesa la fuente en segundo plano y el
+        panel se abre al terminar. Si no hay entrada, se deja el placeholder.
+        """
+        if self._analisis_obsoleto():
+            # Los catálogos son más nuevos que el análisis: no se muestra un
+            # panel viejo como si fuera actual.
+            self._placeholder_panel(
+                clave, "Los catálogos cambiaron desde el último análisis.\n\n"
+                       "Pulse «Procesar catálogos» para regenerar el panel.")
+            return
+        if self._vista_procesada(clave):
+            self._abrir_panel_en_tab(clave)
+            return
+        vista = VISTAS_POR_CLAVE.get(clave)
+        if vista is None or not os.path.isfile(vista["entrada"]):
+            return
+        # Sin esto, abrir la pestaña mientras corre otra tarea arrancaría un
+        # segundo procesamiento que _iniciar descartaría sin dejar rastro.
+        if self.ocupado:
+            return
+        self._placeholder_panel(
+            clave, "Procesando esta fuente…\n\nSe genera el panel a partir de "
+                   "%s." % os.path.basename(vista["entrada"]))
+        self._accion_fuente(VISTA_A_FUENTE[clave])
 
     def _abrir_panel_en_tab(self, clave):
         """Construye (una sola vez) el panel de la vista y la selecciona."""
@@ -1163,10 +1659,18 @@ class App:
         panel = self.paneles.get(clave)
         if vista is None or panel is None:
             return
-        archivo = os.path.join("datos", "eventos_%s.json" % clave)
-        if not os.path.isfile(archivo):
-            self._log("No se encontró %s; no se abre el panel." % archivo)
+        # Sin CSV de entrada vigente no se abre el panel, aunque el JSON exista:
+        # podría ser el de una corrida anterior cuyo CSV se borró por quedar
+        # vacío (ver _procesar_fuente y _borrar en compara.py). _vista_procesada
+        # exige que el JSON sea igual o más nuevo que su entrada.
+        if not self._vista_procesada(clave):
+            self._log("No hay datos vigentes de %s; no se abre el panel."
+                      % vista["etiqueta"])
+            self._placeholder_panel(
+                clave, "No hay datos de %s para mostrar.\n\nPulse «Procesar "
+                       "catálogos» para generarlos." % vista["etiqueta"])
             return
+        archivo = os.path.join("datos", "eventos_%s.json" % clave)
         mtime = os.path.getmtime(archivo)
         # Un panel ya construido con el mismo JSON se reusa tal cual: cambiar
         # de pestaña no debe rehacer perfiles ni redibujar. El frame tiene que
@@ -1230,8 +1734,8 @@ class App:
             for w in list(panel["frame"].winfo_children()):
                 w.destroy()
             panel["construido"] = False
-            texto = ("Todavía no hay nada para mostrar.\n\nEjecute "
-                     "«Ejecutar análisis» para generarlo."
+            texto = ("Todavía no hay nada para mostrar.\n\nPulse "
+                     "«Procesar catálogos» para generarlo."
                      if not os.path.isfile(informe) else
                      "La comparación se ejecutó, pero no encontró ningún "
                      "cruce entre %s y lo publicado.\n\nNo hay eventos "
@@ -1425,10 +1929,9 @@ class App:
             self._log("Atribución de eventquery: %s."
                       % " y ".join(usadas))
         for etiqueta, motivo in omitidas:
-            boton = ("Datos de SeisComp" if etiqueta == "seiscomp"
-                     else "Ejecutar análisis")
             self._log("Sin atribución contra %s (%s). "
-                      "Use «%s» si la quiere." % (etiqueta, motivo, boton))
+                      "Pulse «Procesar catálogos» si la quiere."
+                      % (etiqueta, motivo))
 
     def _rm(self, ruta):
         try:
@@ -1506,6 +2009,58 @@ class App:
             arbol.selection_set(hijos[0])
             al_seleccionar()
 
+    def _ver_no_publicados(self, fuente):
+        """
+        Listado de los eventos no publicados (mag >= 2.5) de una fuente.
+
+        Complementa al panel/mapa: acá se ve el conjunto completo en una tabla,
+        sin tener que ir evento por evento en el ploteo.
+        """
+        ruta = os.path.join(
+            "datos", "no_pub_desde_2_5_%sestricto.csv"
+            % ("" if fuente == "seisan" else "seiscomp_"))
+        titulo = "No publicados de %s" % (
+            "Seisan" if fuente == "seisan" else "SeisComp")
+        top = ttk.Toplevel(title=titulo, master=self.raiz)
+        top.geometry("880x540")
+        marco = ttk.Frame(top, padding=10)
+        marco.pack(fill=BOTH, expand=YES)
+
+        filas = []
+        if os.path.isfile(ruta):
+            try:
+                with open(ruta, encoding="utf-8-sig", newline="") as f:
+                    filas = list(csv.DictReader(f))
+            except OSError as e:
+                self._log("[error] no publicados %s: %s" % (fuente, e))
+        ttk.Label(marco, text="%s: %d evento%s."
+                  % (titulo, len(filas), "" if len(filas) == 1 else "s"),
+                  bootstyle="secondary").pack(anchor=W, pady=(0, 6))
+
+        columnas = [("Fecha_Hora", "Fecha y hora", 150),
+                    ("Latitud", "Latitud", 90),
+                    ("Longitud", "Longitud", 90),
+                    ("Prof.", "Prof. km", 80),
+                    ("Mag.", "Mag.", 70),
+                    ("Tipo_mag.", "Tipo mag.", 80),
+                    ("Analista", "Analista", 120)]
+        claves = [c for c, _, _ in columnas]
+        arbol = ttk.Treeview(marco, columns=claves, show="headings")
+        for clave, tit, ancho in columnas:
+            arbol.heading(clave, text=tit)
+            arbol.column(clave, width=ancho, minwidth=50, stretch=False)
+        barra_v = ttk.Scrollbar(marco, orient="vertical", command=arbol.yview)
+        arbol.configure(yscrollcommand=barra_v.set)
+        barra_h = ttk.Scrollbar(marco, orient="horizontal", command=arbol.xview)
+        arbol.configure(xscrollcommand=barra_h.set)
+        arbol.pack(side="left", fill="both", expand=True)
+        barra_v.pack(side="right", fill="y")
+        barra_h.pack(side="bottom", fill="x")
+        for i, fila in enumerate(filas):
+            arbol.insert("", "end", iid=str(i),
+                         values=[str(fila.get(c, "") or "") for c in claves])
+        self._log("No publicados de %s: %d eventos." % (fuente, len(filas)))
+
     # ----------------------------------------------------------- SeisComp
     # Todo lo de SeisComp se apoya en revisa_seiscomp.py, que ya sabe qué es
     # una exportación, cómo se lee la ventana del catálogo y cómo se dibuja la
@@ -1569,13 +2124,17 @@ class App:
         """Si la exportación de esa ventana tiene la marca de que terminó."""
         return os.path.isfile(cls._ruta_de_marca(ruta_eventos))
 
-    def _par_seiscomp_para_catalogo(self):
+    def _par_seiscomp_para_catalogo(self, silencioso=False):
         """
         El par exportado que mejor cubre la ventana del catálogo, o None.
 
         Va por cobertura y no por fecha de modificación a propósito: cuando se
         revisan varios períodos en la misma carpeta, la última exportación no
         es la que corresponde al catálogo que se está mirando ahora.
+
+        Con 'silencioso' no avisa cuando hay exportaciones pero ninguna cubre la
+        ventana. Lo necesita la compuerta del botón, que consulta esto en cada
+        cambio de estado y llenaría el registro de ese mismo aviso.
         """
         rs = self._importar_revisor()
         if rs is None:
@@ -1584,7 +2143,7 @@ class App:
         if not pares:
             return None
         par = rs._elegir_par(pares, self._ventana_del_catalogo())
-        if par is None and pares:
+        if par is None and pares and not silencioso:
             # Sin cobertura no se elige el más reciente a ciegas: se avisa y
             # deja que el usuario elija, que es lo seguro.
             self._log("Hay exportaciones de SeisComp en datos/, pero ninguna "
@@ -1639,12 +2198,19 @@ class App:
 
 def main():
     if len(sys.argv) < 3:
-        print("Uso: python3 app.py <archivo_entrada.csv> <archivo_salida.dat>")
+        print("Uso: python3 app.py <archivo_entrada.csv> <archivo_salida.dat>"
+              " [estado.json]")
         sys.exit(1)
     archivo = sys.argv[1]
     salida = sys.argv[2]
+    estado = None
+    if len(sys.argv) >= 4:
+        try:
+            estado = json.loads(sys.argv[3])
+        except (TypeError, ValueError):
+            estado = None
     raiz = ttk.Window(themename="flatly")
-    App(raiz, archivo, salida)
+    App(raiz, archivo, salida, estado=estado)
     raiz.mainloop()
 
 

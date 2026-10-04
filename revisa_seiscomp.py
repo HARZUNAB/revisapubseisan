@@ -49,6 +49,8 @@ import os
 import sys
 from datetime import datetime
 
+import comparacion
+
 # Con el histórico completo son casi 70.000 eventos y el árbol se vuelve lento
 # para llenarlo. Se muestran estos y se avisa, pero el filtro busca sobre todos.
 MAX_FILAS = 20000
@@ -1296,40 +1298,38 @@ def abrir_catalogo(contenedor, ruta_csv, etiqueta_fuente=None, log=None,
     return True
 
 
-def _misma_profundidad(a, b):
-    """
-    Compara profundidades ignorando el signo.
-
-    Réplica de la de compara.py. Está duplicada a propósito y no por descuido:
-    comparar.py ejecuta la comparación en el nivel superior (lee sys.argv y
-    escribe informes), así que importarlo desde acá dispararía otra corrida
-    completa. Si alguna vez se cambia una, hay que cambiarla en los dos lados.
-    """
-    a, b = (a or "").strip(), (b or "").strip()
-    if not a or not b:
-        return a == b
-    try:
-        return abs(float(a)) == abs(float(b))
-    except ValueError:
-        return a == b
-
-
 # Eventos que sí están publicados pero cuyos parámetros no coinciden con los de
 # la solución local. Los deltas son distancias (compara.py las toma positivas
 # antes de guardarlas), no desplazamientos con signo: 0.018 es que hay 18 m de
 # diferencia, no hacia dónde.
+#
+# Van juntos el valor local y el publicado de cada parámetro, y al final la
+# columna que dice cuál de ellos discrepó: sin el lado publicado a la vista, la
+# diferencia quedaba invisible (los deltas redondeados a 4 podían dar 0).
 COLUMNAS_NO_ACTUALIZADO = [
     ("fecha_local", "Fecha y hora (local)", 150),
-    ("lat_local", "Latitud", 95),
-    ("lon_local", "Longitud", 95),
-    ("prof_local", "Prof. km", 75),
+    ("lat_local", "Lat. local", 90),
+    ("lat_eventquery", "Lat. publicada", 90),
+    ("lon_local", "Lon. local", 90),
+    ("lon_eventquery", "Lon. publicada", 90),
+    ("prof_local", "Prof. local", 80),
+    ("prof_eventquery", "Prof. publicada", 80),
     ("mag_local", "Mag. local", 80),
-    ("analista", "Analista", 90),
     ("mag_eventquery", "Mag. publicada", 95),
+    ("analista", "Analista", 90),
     ("dt_seg", "Δt (s)", 70),
     ("dlat", "Δlat (°)", 80),
     ("dlon", "Δlon (°)", 80),
+    ("discrepancias", "Parámetros que difieren", 170),
 ]
+
+# Nombre legible de cada parámetro para la columna de discrepancias.
+ETIQUETAS_DISCREPANCIA = {
+    "lat": "lat",
+    "lon": "lon",
+    "prof": "prof",
+    "mag": "mag",
+}
 
 
 def _no_actualizados(fuente, cwd=None):
@@ -1362,23 +1362,34 @@ def _no_actualizados(fuente, cwd=None):
         if actual is None or _a_float(fila.get("dt_seg")) < _a_float(
                 actual.get("dt_seg")):
             mejores[clave] = fila
+    # Se anota qué parámetros discreparon, con el mismo helper que usa
+    # compara.py para decidir el flag: la columna no puede contradecir al
+    # informe.
+    for fila in mejores.values():
+        fila["discrepancias"] = ", ".join(
+            ETIQUETAS_DISCREPANCIA.get(c, c)
+            for c in _discrepancias(fila)) or VACIO
     return list(mejores.values())
+
+
+def _discrepancias(fila):
+    """Lista de parámetros ('lat', 'lon', 'prof', 'mag') que no coinciden."""
+    return comparacion.parametros_discrepantes(
+        fila.get("lat_eventquery", ""), fila.get("lon_eventquery", ""),
+        fila.get("prof_eventquery", ""), fila.get("mag_eventquery", ""),
+        fila.get("lat_local", ""), fila.get("lon_local", ""),
+        fila.get("prof_local", ""), fila.get("mag_local", ""))
 
 
 def _no_actualizado(fila):
     """Si este cruce marca el evento como no actualizado.
 
-    Mismo criterio que usa comparar() en compara.py: cambia la latitud, la
-    longitud o la profundidad. Se comparan las cadenas tal cual llegan del CSV
-    porque el cruzador original también compara las suyas, no los números
-    redondeados: dos fuentes pueden escribir el mismo valor con distinta
-    cantidad de decimales y para el informe eso cuenta como diferencia.
+    Mismo criterio que usa comparar() en compara.py, vía comparacion.py:
+    difieren la latitud, la longitud, la profundidad o la magnitud, comparadas
+    numéricamente a la precisión con la que se manejan (coordenadas a 3
+    decimales; profundidad y magnitud a 1).
     """
-    if (fila.get("lat_eventquery", "") != fila.get("lat_local", "")
-            or fila.get("lon_eventquery", "") != fila.get("lon_local", "")):
-        return True
-    return not _misma_profundidad(fila.get("prof_eventquery", ""),
-                                   fila.get("prof_local", ""))
+    return bool(_discrepancias(fila))
 
 
 def abrir_no_actualizados(contenedor, fuente, log=None, cwd=None):
@@ -1435,10 +1446,11 @@ def abrir_no_actualizados(contenedor, fuente, log=None, cwd=None):
         valores = []
         for clave, _titulo, _ancho in COLUMNAS_NO_ACTUALIZADO:
             bruto = fila.get(clave, "")
-            if clave in ("lat_local", "lon_local", "dlat", "dlon"):
+            if clave in ("lat_local", "lon_local", "lat_eventquery",
+                         "lon_eventquery", "dlat", "dlon"):
                 valores.append(_texto(bruto))
-            elif clave in ("prof_local", "mag_local", "mag_eventquery",
-                           "dt_seg"):
+            elif clave in ("prof_local", "prof_eventquery", "mag_local",
+                           "mag_eventquery", "dt_seg"):
                 valores.append(_numero(bruto))
             else:
                 valores.append(str(bruto))

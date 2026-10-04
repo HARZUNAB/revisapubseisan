@@ -31,6 +31,7 @@ escrita.
 Si algo falla se avisa por la salida de errores (la consola desde donde se
 lanzó supervisor.sh) y no se abre la ventana principal.
 """
+import json
 import os
 import queue
 import shutil
@@ -123,9 +124,13 @@ class App:
         self._texto_estado = "En espera."
         self._t0 = 0.0
 
+        # Id del after de _drenar, para cancelarlo al cerrar y que Tk no lo
+        # ejecute con la raíz ya destruida (bgerror en la consola).
+        self._after_drenar = None
         self._construir()
+        self._precargar_ventana()
         self.raiz.protocol("WM_DELETE_WINDOW", self._cancelar)
-        self.raiz.after(100, self._drenar)
+        self._after_drenar = self.raiz.after(100, self._drenar)
 
     # ------------------------------------------------------------------ UI
     def _dimensionar(self):
@@ -191,6 +196,10 @@ class App:
                                          bootstyle="secondary",
                                          wraplength=600)
         self.estado_archivos.pack(anchor=W, pady=(8, 0))
+        # Nota de la autodetección de ventanas (cuando hay más de una).
+        self.nota_deteccion = ttk.Label(marco, text="", bootstyle="secondary",
+                                        wraplength=600)
+        self.nota_deteccion.pack(anchor=W)
         for entrada in (self.ent_ini, self.ent_fin):
             entrada.bind("<KeyRelease>", self._al_editar_fecha)
 
@@ -252,7 +261,7 @@ class App:
             pass
         if self.trabajando:
             self._refrescar_estado()
-        self.raiz.after(100, self._drenar)
+        self._after_drenar = self.raiz.after(100, self._drenar)
 
     # ------------------------------------------------------------- avance
     def _pintar_progreso(self, fraccion, texto):
@@ -297,6 +306,48 @@ class App:
                                 self.etapa_nombre)))
 
     # --------------------------------------------------------- archivos
+    def _ventanas_detectadas(self):
+        """Ventanas (ini, fin) con select y eventquery presentes, la más
+        reciente primero (por la fecha de fin)."""
+        import glob
+        import re
+        patron = re.compile(
+            r"^(?:select|eventquery)_(\d{14})_(\d{14})\.(?:out|csv)$")
+        presentes = {}
+        rutas = (glob.glob("select_*_*.out")
+                 + glob.glob("eventquery_*_*.csv"))
+        for ruta in rutas:
+            m = patron.match(os.path.basename(ruta))
+            if not m or not _hay_archivo(ruta):
+                continue
+            ini, fin = m.group(1), m.group(2)
+            clase = "select" if ruta.endswith(".out") else "eventquery"
+            presentes.setdefault((ini, fin), set()).add(clase)
+        ventanas = [v for v, clases in presentes.items()
+                    if clases == {"select", "eventquery"}]
+        return sorted(ventanas, key=lambda v: v[1], reverse=True)
+
+    def _precargar_ventana(self):
+        """Precarga inicio/fin con la ventana de catálogos ya presente.
+
+        Así «Ya los tengo» funciona sin tipear nada al reingresar. Si hay más
+        de una ventana, usa la de fin más reciente y lo avisa.
+        """
+        ventanas = self._ventanas_detectadas()
+        if not ventanas:
+            return
+        ini, fin = ventanas[0]
+        self.ent_ini.delete(0, END)
+        self.ent_ini.insert(0, ini)
+        self.ent_fin.delete(0, END)
+        self.ent_fin.insert(0, fin)
+        if len(ventanas) > 1:
+            self.nota_deteccion.configure(
+                text="Se detectaron %d ventanas; se precargó la más reciente "
+                     "(%s - %s). Ajuste las fechas si no es la que busca."
+                     % (len(ventanas), ini, fin))
+        self._refrescar_estado_archivos()
+
     def _archivos_ventana(self, inicio14, fin14):
         """Los catálogos de esa ventana y si están utilizables en disco."""
         cwd = os.getcwd()
@@ -364,6 +415,8 @@ class App:
             return
         if self.aviso.cget("text"):
             self.aviso.configure(text="")
+        if self.nota_deteccion.cget("text"):
+            self.nota_deteccion.configure(text="")
         self._refrescar_estado_archivos()
 
     # ------------------------------------------------------------- acciones
@@ -436,60 +489,99 @@ class App:
 
     # ------------------------------------------------------------- tarea
     def _tarea(self, modo):
-        try:
-            cwd = os.getcwd()
-            rutas.asegurar_dirs()
-            inicio14, fin14 = self._inicio, self._fin
+        """
+        Baja lo que se pueda y sigue.
 
+        A diferencia de antes, un fallo en cualquiera de los tres catálogos ya
+        no corta el proceso: se anota, se sigue con los demás y se abre app.py
+        con el estado de lo que faltó, para que el usuario lo vea y pueda
+        re-exportar solo ese catálogo.
+        """
+        cwd = os.getcwd()
+        inicio14, fin14 = self._inicio, self._fin
+        nombre_select = "select_%s_%s.out" % (inicio14, fin14)
+        ruta_select = os.path.join(cwd, nombre_select)
+        ruta_evento = os.path.join(
+            cwd, "eventquery_%s_%s.csv" % (inicio14, fin14))
+        fallas = {}
+
+        try:
+            rutas.asegurar_dirs()
             self.plan_etapas = (PLAN_DESCARGAR if modo == "descargar"
                                 else PLAN_USAR)
 
-            nombre_select = "select_%s_%s.out" % (inicio14, fin14)
-            ruta_select = os.path.join(cwd, nombre_select)
-            ruta_evento = os.path.join(
-                cwd, "eventquery_%s_%s.csv" % (inicio14, fin14))
-
             if modo == "descargar":
                 self._fijar_etapa(0)
-                with tc.Conexion(self._pass, log=self._log) as conexion:
-                    tc.verificar_conexion(conexion, log=self._log,
-                                          progreso=self._progreso_local)
-                    self._fijar_etapa(1)
-                    tc.traer_seisan(inicio14, fin14, conexion, cwd=cwd,
-                                    log=self._log,
-                                    progreso=self._progreso_local)
-                    self._fijar_etapa(2)
-                    tc.traer_eventquery(inicio14, fin14, conexion, cwd=cwd,
-                                        log=self._log,
-                                        progreso=self._progreso_local)
+                try:
+                    with tc.Conexion(self._pass, log=self._log) as conexion:
+                        tc.verificar_conexion(conexion, log=self._log,
+                                              progreso=self._progreso_local)
+                        self._fijar_etapa(1)
+                        try:
+                            tc.traer_seisan(inicio14, fin14, conexion,
+                                            cwd=cwd, log=self._log,
+                                            progreso=self._progreso_local)
+                        except Exception as e:
+                            self._log("[X] No se obtuvo Seisan: %s" % e)
+                            fallas["Seisan"] = str(e)
+                        self._fijar_etapa(2)
+                        try:
+                            tc.traer_eventquery(inicio14, fin14, conexion,
+                                                cwd=cwd, log=self._log,
+                                                progreso=self._progreso_local)
+                        except Exception as e:
+                            self._log("[X] No se obtuvo eventquery: %s" % e)
+                            fallas["eventquery"] = str(e)
+                except Exception as e:
+                    # Falló la conexión: no se pudo intentar ninguna bajada.
+                    self._log("[X] Falló la conexión con el servidor: %s" % e)
+                    if not _hay_archivo(ruta_select):
+                        fallas.setdefault("Seisan", str(e))
+                    if not _hay_archivo(ruta_evento):
+                        fallas.setdefault("eventquery", str(e))
 
             # revisaselect.py abre literalmente "select.out": el archivo con
             # fechas es el de reuso y este es el que consume el análisis.
-            # Ahora que ambos caminos/start guarantee el archivo (descarga o
-            # verificación previa), si falta es un error, no un aviso.
+            # copy2 (no copyfile) para preservar la fecha del select: si se
+            # reusa, select.out no debe quedar más nuevo que salida_collect.csv
+            # (lo marcaría como "cambió" en cada arranque sin motivo).
             self._fijar_etapa(3 if modo == "descargar" else 0)
-            if not _hay_archivo(ruta_select):
-                raise RuntimeError(
-                    "No se obtuvo %s. Vuelva a «Solicitar y descargar»."
-                    % nombre_select)
-            shutil.copyfile(ruta_select, os.path.join(cwd, "select.out"))
-            self._log("select.out actualizado desde %s" % nombre_select)
+            if _hay_archivo(ruta_select):
+                shutil.copy2(ruta_select, os.path.join(cwd, "select.out"))
+                self._log("select.out actualizado desde %s" % nombre_select)
+            else:
+                fallas.setdefault("Seisan", "no está %s" % nombre_select)
 
             if not _hay_archivo(ruta_evento):
-                raise RuntimeError(
-                    "No se obtuvo %s. Vuelva a «Solicitar y descargar»."
-                    % os.path.basename(ruta_evento))
+                fallas.setdefault(
+                    "eventquery",
+                    "no está %s" % os.path.basename(ruta_evento))
 
-            self._exportar_seiscomp(
-                inicio14, fin14,
-                4 if modo == "descargar" else 1,
-                5 if modo == "descargar" else 2)
+            try:
+                self._exportar_seiscomp(
+                    inicio14, fin14,
+                    4 if modo == "descargar" else 1,
+                    5 if modo == "descargar" else 2)
+            except Exception as e:
+                self._log("[X] No se obtuvo SeisComp: %s" % e)
+                fallas.setdefault("SeisComp", str(e))
+        except Exception as e:
+            self._log("[X] Error inesperado durante la solicitud: %s" % e)
+            fallas.setdefault("desconocido", str(e))
 
+        estado = {
+            "inicio": inicio14,
+            "fin": fin14,
+            "faltantes": sorted(fallas),
+            "detalles": fallas,
+        }
+        if fallas:
+            self._log("Se abre la revisión con los catálogos disponibles. "
+                      "Faltaron: %s." % ", ".join(sorted(fallas)))
+        else:
             self._log("Listo. Se abre la revisión con %s."
                       % os.path.basename(ruta_evento))
-            self.cola.put(("fin", ruta_evento))
-        except Exception as e:
-            self.cola.put(("error", str(e)))
+        self.cola.put(("fin", (ruta_evento, estado)))
 
     def _exportar_seiscomp(self, inicio14, fin14, i_verifica, i_exporta):
         self._fijar_etapa(i_verifica)
@@ -537,17 +629,32 @@ class App:
         return p.returncode
 
     # ------------------------------------------------------------- cierre
-    def _terminar_ok(self, ruta_evento):
+    def _cancelar_after(self):
+        """Cancela el after de _drenar antes de destruir la raíz (evita el
+        bgerror de Tk en la consola al cerrar)."""
+        if self._after_drenar is not None:
+            try:
+                self.raiz.after_cancel(self._after_drenar)
+            except Exception:
+                pass
+            self._after_drenar = None
+
+    def _terminar_ok(self, dato):
+        # 'dato' es (ruta_evento, estado): el estado viaja como JSON en el
+        # tercer argumento para que app.py sepa el período y qué faltó.
+        ruta_evento, estado = dato
         salida = os.path.join("trabajo", "salida.dat")
+        self._cancelar_after()
         try:
             self.raiz.destroy()
         except Exception:
             pass
         os.execv(PY, [PY, os.path.join(SCRIPT_DIR, "app.py"),
-                      ruta_evento, salida])
+                      ruta_evento, salida, json.dumps(estado)])
 
     def _terminar_error(self, mensaje):
         print("[solicitud] %s" % mensaje, file=sys.stderr)
+        self._cancelar_after()
         try:
             self.raiz.destroy()
         except Exception:
@@ -556,6 +663,7 @@ class App:
 
     def _cancelar(self):
         print("[solicitud] Cancelado por el usuario.", file=sys.stderr)
+        self._cancelar_after()
         try:
             self.raiz.destroy()
         except Exception:
