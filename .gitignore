@@ -1,7 +1,34 @@
+# Entorno virtual y cachés de Python
+.venv/
+__pycache__/
+*.pyc
+
+# Datos geospatiales pesados
 *.tif
 *.xyz
 *.npy
-__pycache__/
 
-# entorno virtual del proyecto
-.venv/
+# Todo lo que el flujo de revisión escribe en la carpeta desde donde corre la
+# app. Esto NO es código: es caché y entregables, y se regeneran corriendo el
+# análisis. datos/ e informes/ son caché que la app relee para no repetir
+# trabajo; descargas/ son los archivos que uno se lleva.
+datos/
+informes/
+analistas/
+ploteo/
+trabajo/
+descargas/
+listados/
+
+# Catálogos bajados del servidor y derivados que quedan en la raíz del
+# directorio de ejecución. Ojo: base_*.dat y base_*.csv SÍ son del proyecto y
+# están versionados, así que acá van los nombres con prefijo propio y no *.dat.
+select.out
+select_*.out
+eventquery_*.csv
+*.csv.completo
+
+# Residuo de cuando el flujo escribía en la raíz; ahora todo va a datos/.
+/eventos_eventquery.json
+/conteo_perfiles_eventquery.json
+/sospechosos_eventquery.csv

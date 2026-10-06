@@ -21,7 +21,7 @@ linealista=''
 # genera txt agregando un cero a dias menores a 10 y separa el dia del mes
 archivo=open(rutas.p_informes("excluidos.txt"))
 archivo1=open(rutas.p_trabajo("excluidos_tmp_1.txt"), "w")
-revisar=open(rutas.p_informes("revisar.txt"), "w")
+revisar=rutas.entregable("revisar.txt")
 
 for linea in archivo:
 	sismo=linea.split()

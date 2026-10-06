@@ -2,22 +2,77 @@
 """Exporta a CSV las soluciones preferidas de SeisComp6 de una ventana de tiempo.
 
 Consulta los eventos cuyo origen preferido cae dentro de la ventana indicada y
-escribe dos CSV:
+escribe tres CSV:
 
   * <salida>.csv          una fila por evento, con la solución preferida.
   * <salida>_fases.csv    una fila por llegada de estación de esa solución
                           preferida: fase y hora, geometría, si fue usada, la
                           magnitud que calculó esa estación, su tipo, el
-                          residuo, el control de calidad y los datos de
-                          inventario. Se asocia con el evento por id_evento.
-                          Si la estación no calculó magnitud para esa fase, la
-                          fila sigue apareciendo igual, con la celda vacía y
+                          residuo, el control de calidad, los datos de
+                          inventario y la procedencia del pick (manual o
+                          automático, con autor, agencia y método). Se asocia
+                          con el evento por id_evento. Si la estación no
+                          calculó magnitud para esa fase, la fila sigue
+                          apareciendo igual, con la celda vacía y
                           tiene_magnitud en "No". Nunca se escribe 0 en una
                           celda sin dato, porque un cero falso se cuela en los
                           promedios sin avisar.
+  * <salida>_no_picadas.csv  una fila por estación del inventario que quedó
+                          dentro del radio del evento y no fue picada: su
+                          distancia al hipocentro, sus datos de inventario y
+                          cuántas otras veces picó cerca en el tiempo.
 
-Los dos archivos terminan en una columna base_datos, que dice de qué base salió
-cada fila.
+Los dos primeros archivos terminan en una columna base_datos, que dice de qué
+base salió cada fila. El de no picadas no la lleva: el inventario no es de una
+base en particular.
+
+ESTACIONES NO PICADAS
+
+El tercer archivo responde a la pregunta de por qué una estación cercana no
+aparece en la solución. Sale del INVENTARIO y no de las fases, porque una
+estación sin arribos asociados no tiene fila de llegada: el INNER JOIN de las
+fases descarta justamente lo que acá se busca.
+
+Importante, porque el nombre puede hacer pensar otra cosa: esto NO dice que la
+estación no haya grabado. La base de metadatos de SeisComp no registra qué
+estaciones tienen formas de onda de cada evento; eso vive en el archivo de
+ondas. Lo que el archivo responde es qué estaciones tenían inventario vigente
+dentro del radio y no tienen arrivals/picks asociados al ORIGEN PREFERIDO del
+evento. Por eso la interfaz las llama "sin arribos" y no "no grabó".
+
+La cadena de inventario se valida entera por evento: red, estación, sensor
+location y stream tienen que estar vigentes en la hora del evento. Una estación
+sin sensorlocation/stream vigente no se lista, porque no hay forma de sostener
+que estuviera operativa. Las columnas loc_ref/cha_ref son el stream de
+REFERENCIA (el de época más reciente entre los vigentes) y streams_vigentes
+cuenta cuántos había; no son el único stream disponible.
+
+Además se acota a los BINDINGS: solo las estaciones que SeisComp tiene
+configurado procesar (tabla configstation, módulos habilitados). Puede haber
+dataless cargado sin binding creado, y esas estaciones no se listan porque
+SeisComp no las trabaja. El binding es la config ACTUAL y no tiene épocas, así
+que para eventos históricos es una aproximación (el inventario sí resuelve la
+vigencia de la estación por evento). Si no se encuentran bindings, no se filtra.
+
+La columna actividad_ventana cuenta cuántos otros eventos de la ventana tienen
+picks de esa estación dentro de ±ACTIVIDAD_HORAS. Es un indicador indirecto de
+operación: en cero la estación puede estar caída, no interesarle el evento o
+simplemente nadie la revisó; mayor que cero indica que estaba operando y no
+tiene arribos en ESTE evento, que es el caso a revisar. El radio sale de
+--radio-km (300 km por defecto) y la ventana de --actividad-h (24 horas por
+defecto).
+
+Este radio es SOLO para las estaciones sin arribos de los eventos de SeisComp:
+no tiene nada que ver con los catálogos de Seisan ni de eventquery, que no
+arman esta lista. El exportador también ofrece estimar_no_picadas(), que
+estima cuántas filas y cuántos MB tendría la lista antes de calcularla, para
+avisar cuando la ventana es grande.
+
+Los campos waveform_status, availability_source, cobertura_desde y
+cobertura_hasta quedan previstos para cuando se consulte disponibilidad real
+(SDS, scardac/DataAvailability o FDSN Availability). Hoy waveform_status vale
+NO_CONSULTADO y los otros van vacíos: no se afirma nada sobre las formas de
+onda.
 
 Uso:
     ./exporta_ventana_seiscomp.py
@@ -35,7 +90,7 @@ pasan los dos argumentos, se preguntan por pantalla con validación. Con
 se aceptan con Enter, pero igual se pueden cambiar: la sugerencia no obliga a
 exportar ese período ni lo restringe, la ventana sigue siendo libre.
 
-Con --reusar, si los dos archivos de esa ventana ya existen y la exportación
+Con --reusar, si los tres archivos de esa ventana ya existen y la exportación
 anterior terminó bien, no se consulta la base y se devuelven los archivos que
 ya están. Ver REEXPORTAR ABAJO para qué hace falta la marca de fin.
 
@@ -62,7 +117,7 @@ no cubre la ventana pedida, lo avisa antes de exportar.
 REEXPORTAR
 
 Con --reusar se busca no volver a pegarle a la base cuando la ventana pedida ya
-se exportó. Para saber si se puede, no alcanza con que los dos CSV existan: una
+se exportó. Para saber si se puede, no alcanza con que los CSV existan: una
 exportación que se cortó a mitad de camino deja el archivo de fases a medias y
 se vería como una ventana más corta, sin ningún aviso. Por eso, al terminar
 bien, se escribe una tercera archivo al lado:
@@ -74,6 +129,10 @@ reutiliza los CSV si la marca está; si no está, los vuelve a exportar. La marc
 se borra al empezar una exportación y se vuelve a escribir al terminarla, así
 que un intento fallido nunca deja decir que algo se completó cuando no.
 
+--reusar además exige que estén los TRES CSV. Una ventana exportada antes de que
+existiera el de no picadas se vuelve a exportar aunque tenga la marca, porque sin
+ese archivo la solapa de estaciones del revisor no tiene qué mostrar.
+
 Este script es de SOLO LECTURA: no modifica la base de datos bajo ninguna
 circunstancia. Lo único que envía al servidor es "SET TIME ZONE 'UTC'" (un
 ajuste de sesión que no altera datos y se descarta al cerrar la conexión) y
@@ -83,10 +142,12 @@ en rollback.
 """
 import csv
 import decimal
+import math
 import os
 import re
 import sys
-from datetime import datetime
+from bisect import bisect_left, bisect_right
+from datetime import datetime, timedelta
 
 import prog
 
@@ -112,14 +173,30 @@ AVISO_DE_LOTES = 200000
 # 3 valores bajo -1 y 4 sobre 10 de 169.130. Salirse de acá es un cálculo roto.
 RANGO_MAG_ESTACION = (-1.0, 10.0)
 
+# Radio, en kilómetros, para la búsqueda de estaciones que NO fueron picadas en
+# un evento. Es el número que hace acotable el análisis: sin radio salen todas
+# las estaciones del inventario, que no es lo que interesa. 300 km cubre de
+# sobra la red cercana de un evento chileno, y con --radio-km se cambia sin
+# tocar el código. El revisor además puede ampliar el radio por evento contra
+# la base sin re-exportar, así que este corte solo acota el tamaño del archivo.
+RADIO_ESTACIONES_KM = 300.0
+
+# Qué tan lejos en el tiempo se busca que una estación haya picado otro evento
+# para considerarla "activa". No es lo mismo que estar en el inventario: una
+# estación puede tener su época vigente y no haber grabado nunca. La señal de
+# que hubo datos fluyendo es que haya picado algo cerca en el tiempo. Con 24 h
+# una estación que operó ese día cuenta, y una que solo trabajó a principios de
+# mes no aparece como disponible para un evento del 28.
+ACTIVIDAD_HORAS = 24.0
+
 # Las mismas 14 columnas, en el mismo orden, que consulta_eventosSC.py, más
 # base_datos al final: de qué base salió la fila. Con varias bases en juego no
 # hay forma de trazar un valor sospechoso hasta su origen si esto no queda
 # escrito en el archivo.
 CABECERA = [
-    "id_evento", "ot_utc", "magnitud", "tipo_magnitud", "fases", "rms",
-    "azgap", "latitud", "longitud", "profundidad_km", "agencia", "operador",
-    "region", "estatus", "base_datos",
+    "id_evento", "id_origen", "ot_utc", "magnitud", "tipo_magnitud", "fases",
+    "rms", "azgap", "latitud", "longitud", "profundidad_km", "agencia",
+    "operador", "region", "estatus", "base_datos",
 ]
 
 # Anclada al evento y unida a su solución preferida: evento -> origen preferido
@@ -135,6 +212,7 @@ CABECERA = [
 CONSULTA_SQL = """
 SELECT
     TRIM(po_e.m_publicid::text) AS id_evento,
+    TRIM(po_o.m_publicid::text) AS id_origen,
     o.m_time_value AS ot_utc,
     ROUND(m.m_magnitude_value::numeric, 1) AS magnitud,
     m.m_type AS tipo_magnitud,
@@ -222,6 +300,10 @@ CABECERA_FASES = [
     "azimut", "distancia",
     # Cuáles usó la solución
     "usada", "peso", "polaridad",
+    # Procedencia del pick: manual/automatic, autor, agencia y método. Permite
+    # saber si la llegada que entró a la solución la picó un analista o un
+    # autopicker, y con qué método.
+    "modo_pick", "pick_autor", "pick_agencia", "pick_metodo",
     # Características de la medición
     "snr",
     # Magnitud que calculó esa estación para esa fase. Si no la calculó, la
@@ -255,6 +337,14 @@ SELECT
     a.m_timeUsed                         AS usada,
     a.m_weight                           AS peso,
     p.m_polarity                         AS polaridad,
+    -- Procedencia del pick: si lo hizo un analista (manual) o un autopicker
+    -- (automatic), quién/agencia y con qué método. En la base, un pick manual
+    -- trae el nombre del analista en m_creationinfo_author y el método vacío;
+    -- uno automático trae el daemon (scautopic...) y el método (p. ej. AIC).
+    p.m_evaluationmode                   AS modo_pick,
+    p.m_creationinfo_author              AS pick_autor,
+    p.m_creationinfo_agencyid            AS pick_agencia,
+    p.m_methodid                         AS pick_metodo,
     amp.m_snr                            AS snr,
     sm.m_magnitude_value                 AS mag_estacion,
     sm.m_type                            AS tipo_mag_estacion,
@@ -343,6 +433,144 @@ WHERE o.m_time_value >= %s
   AND (%s::text IS NULL OR o.m_evaluationStatus = %s::text)
 ORDER BY o.m_time_value, p.m_waveformID_stationCode, a.m_azimuth NULLS LAST;
 """
+
+# ---------------------------------------------------------------------------
+# Estaciones SIN ARRIBOS asociados
+# ---------------------------------------------------------------------------
+# Esta es la consulta al revés: en vez de las estaciones que tienen arribos, las
+# que estaban en el inventario y no los tienen. Sale del inventario, no de las
+# fases, porque una estación sin arribos no aparece en la tabla de llegadas: el
+# INNER JOIN de CONSULTA_FASES_SQL descarta justo lo que se busca acá.
+#
+# OJO, y es lo que hay que tener claro al leer el archivo: el inventario dice
+# que la estación estaba CONFIGURADA, no que grabara este evento. La base de
+# metadatos de SeisComp no registra qué estaciones tienen formas de onda de un
+# evento; eso vive en el archivo de ondas. Por eso el archivo no dice "no grabó"
+# sino "sin arribos": la diferencia entre una estación caída y una que el
+# analista no revisó la resuelve quien mira la señal.
+#
+# La vigencia se trae entera (m_start/m_end) y se resuelve por evento en Python,
+# no en el SELECT: una estación puede tener varias épocas y cuál corresponde
+# depende de la hora de cada evento, así que el filtro va por evento y no por
+# ventana. Por eso el WHERE solo acota la ventana de forma gruesa, con el epoch
+# de estación que se solapa con ella.
+#
+# La cadena se valida completa: red, estación, sensor location y stream. Los
+# INNER JOIN sobre sensorlocation y stream son a propósito: una estación sin
+# stream definido no se puede validar como operativa y no se lista. Un mismo
+# código de estación puede tener varias sensor locations y cada una varios
+# streams, así que la consulta devuelve una fila por stream y el agrupamiento
+# por estación se hace en Python.
+#
+# Sin coordenadas no hay distancia, así que una estación sin latitud o sin
+# longitud no sirve para este archivo y se descarta abajo. Sigue apareciendo en
+# el de fases, porque ahí el inventario solo enriquece.
+CONSULTA_INVENTARIO_SQL = """
+SELECT
+    net.m_code       AS red,
+    st.m_code        AS estacion,
+    st.m_start       AS epoca_inicio,
+    st.m_end         AS epoca_fin,
+    st.m_latitude    AS latitud,
+    st.m_longitude   AS longitud,
+    st.m_elevation   AS elevacion,
+    st.m_place       AS lugar,
+    st.m_country     AS pais,
+    net.m_start      AS red_inicio,
+    net.m_end        AS red_fin,
+    loc.m_code       AS loc,
+    loc.m_start      AS loc_inicio,
+    loc.m_end        AS loc_fin,
+    str.m_code       AS cha,
+    str.m_start      AS cha_inicio,
+    str.m_end        AS cha_fin
+FROM network net
+INNER JOIN station st ON st._parent_oid = net._oid
+INNER JOIN sensorlocation loc ON loc._parent_oid = st._oid
+INNER JOIN stream str ON str._parent_oid = loc._oid
+WHERE st.m_latitude IS NOT NULL
+  AND st.m_longitude IS NOT NULL
+  AND st.m_start <= %s
+  AND (st.m_end IS NULL OR st.m_end >= %s)
+ORDER BY net.m_code, st.m_code, st.m_start, loc.m_start, str.m_start
+"""
+
+# Bindings habilitados: las estaciones que SeisComp está CONFIGURADO a
+# procesar (los "trunk" que mencionan los etc/init/*.py son el proxy de config;
+# por eso no se fija el nombre del módulo). Es un subconjunto del inventario:
+# puede haber dataless cargado sin binding creado. Lo usa el listado de "sin
+# arribos" para no listar estaciones que SeisComp no trabaja.
+CONSULTA_BINDINGS_SQL = """
+SELECT DISTINCT
+    TRIM(c.m_networkcode) AS red,
+    TRIM(c.m_stationcode) AS estacion
+FROM configstation c
+INNER JOIN configmodule m ON m._oid = c._parent_oid
+WHERE c.m_enabled
+  AND m.m_enabled
+"""
+
+# Actividad de una estación alrededor de un instante: los eventos (orígenes
+# preferidos) que picó dentro de ±horas. Misma cadena que las fases (evento ->
+# origen preferido -> arrival -> pick), pero acotada al tramo temporal y sin
+# columnas de más. DISTINCT porque una estación puede tener varias llegadas en
+# el mismo origen y lo que se cuenta son eventos, no llegadas. La usa el
+# revisor cuando amplía el radio de un evento contra la base sin re-exportar.
+CONSULTA_ACTIVIDAD_SQL = """
+SELECT DISTINCT
+    p.m_waveformID_networkCode           AS red,
+    p.m_waveformID_stationCode           AS estacion,
+    o.m_time_value                       AS instante
+FROM event e
+INNER JOIN publicobject po_e ON po_e._oid = e._oid
+INNER JOIN publicobject po_o ON po_o.m_publicid = e.m_preferredoriginid
+INNER JOIN origin o ON o._oid = po_o._oid
+INNER JOIN arrival a ON a._parent_oid = o._oid
+INNER JOIN publicobject po_p ON po_p.m_publicid = a.m_pickID
+INNER JOIN pick p ON p._oid = po_p._oid
+WHERE o.m_time_value >= %s
+  AND o.m_time_value <= %s
+  AND (%s::text IS NULL OR o.m_evaluationstatus = %s::text)
+ORDER BY red, estacion, instante
+"""
+
+# Valor por defecto de waveform_status mientras no se consulte una fuente de
+# disponibilidad. Es una cadena explícita y no una celda vacía a propósito:
+# vacío se lee como "no se sabe", y acá lo correcto es "no se consultó".
+ESTADO_SIN_CONSULTAR = "NO_CONSULTADO"
+
+CABECERA_NO_PICADAS = [
+    # Con qué evento se asocia la fila, igual que en el archivo de fases: así
+    # el revisor puede leer solo el tramo de este evento del archivo entero.
+    "id_evento",
+    # Origen preferido con el que se clasificaron los arribos y las estaciones.
+    # Es la referencia contra la que se mide "sin arribos".
+    "id_origen",
+    # Qué estación es
+    "red", "estacion",
+    # Stream de REFERENCIA: el de época más reciente entre los vigentes. No es
+    # el único stream disponible; para eso está streams_vigentes.
+    "loc_ref", "cha_ref", "streams_vigentes",
+    # Distancia al hipocentro en kilómetros. Es la columna por la que se ordena
+    # la solapa de la interfaz: lo interesante es lo que quedó cerca.
+    "distancia_km",
+    # Inventario de esa estación en la época del evento
+    "est_lat", "est_lon", "est_elev", "est_lugar", "est_pais",
+    # Con qué radio se generó esta lista
+    "radio_km",
+    # Cuántos OTROS eventos de la ventana tienen picks de esta estación dentro
+    # de ±ACTIVIDAD_HORAS. Es un indicador INDIRECTO de operación: si está en
+    # cero, la estación puede estar caída, no interesarle el evento, o
+    # simplemente nadie la revisó. Si es mayor que cero, estaba operando y no
+    # tiene arribos en ESTE evento, que es exactamente el caso a revisar. No
+    # demuestra que haya grabado.
+    "actividad_ventana",
+    # Disponibilidad de formas de onda. Hoy no se consulta ninguna fuente: va
+    # NO_CONSULTADO y los demás vacíos, para que el archivo ya tenga el lugar
+    # cuando se integren SDS, scardac/DataAvailability o FDSN Availability.
+    "waveform_status", "availability_source", "cobertura_desde",
+    "cobertura_hasta",
+]
 
 
 
@@ -651,6 +879,12 @@ def _ruta_fases(salida_eventos):
     return "%s_fases%s" % (base, extension or ".csv")
 
 
+def _ruta_no_picadas(salida_eventos):
+    """Deriva el nombre del CSV de estaciones no picadas desde el de eventos."""
+    base, extension = os.path.splitext(salida_eventos)
+    return "%s_no_picadas%s" % (base, extension or ".csv")
+
+
 def _ruta_completo(salida_eventos):
     """
     Nombre de la marca que dice que aquella exportación terminó.
@@ -662,19 +896,52 @@ def _ruta_completo(salida_eventos):
     return "%s.completo" % salida_eventos
 
 
-def _escribir_marca(ruta, inicio, fin, eventos, fases, bases):
+def _escribir_marca(ruta, inicio, fin, eventos, fases, no_picadas, radio_km,
+                    bases, descartadas=0):
     """
     Deja escrito que la exportación de esa ventana llegó hasta el final.
 
     Va con la cantidad de filas y con las bases consultadas porque, cuando más
     adelante alguien mire la carpeta, el archivo solo no dice si esos datos
     corresponden a lo que el catálogo pedía o a otra ventana.
+
+    La cantidad de no picadas también queda escrita, junto con el radio con el
+    que se calcularon: sin eso, dos archivos con el mismo nombre no se pueden
+    comparar y no se sabe con qué criterio se armó la lista de estaciones. Las
+    descartadas por falta de sensorlocation/stream se anotan aparte porque son
+    justamente las que no llegaron al archivo y sin ese número no se sabe si
+    faltan por criterio o por inventario incompleto.
     """
     with open(ruta, "w", encoding="utf-8") as f:
-        f.write("ventana %s %s | eventos %d | fases %d | bases %s | %s UTC\n"
+        f.write("ventana %s %s | eventos %d | fases %d | no_picadas %d"
+                " (radio %.0f km) | descartadas_sin_stream %d | bases %s | %s"
+                " UTC\n"
                 % (inicio.strftime(FORMATO), fin.strftime(FORMATO),
-                   eventos, fases, ",".join(bases),
+                   eventos, fases, no_picadas, radio_km, descartadas,
+                   ",".join(bases),
                    datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")))
+
+
+def _radio_de_la_marca(ruta):
+    """
+    El radio con el que se exportó, leído de la marca. None si no se puede.
+
+    Hace falta para el reuso: si el usuario pide un radio distinto del que tiene
+    la exportación en disco, no se puede reusar, porque el corte de estaciones
+    estaría calculado con el otro radio.
+    """
+    try:
+        with open(ruta, encoding="utf-8") as f:
+            texto = f.read()
+    except OSError:
+        return None
+    coincidencia = re.search(r"radio\s+(\d+(?:\.\d+)?)\s*km", texto)
+    if coincidencia is None:
+        return None
+    try:
+        return float(coincidencia.group(1))
+    except ValueError:
+        return None
 
 
 def _resumen_fases(filas_fases):
@@ -796,6 +1063,349 @@ WHERE o.m_time_value >= %s
   AND (%s::text IS NULL OR o.m_evaluationStatus = %s::text)
 """
 
+# Cantidad de eventos confirmados de la ventana. Es liviana (no trae las filas)
+# y se usa para escalar la estimación muestreada de no picadas.
+CONSULTA_EVENTOS_VENTANA_SQL = """
+SELECT count(*) AS total
+FROM event e
+INNER JOIN publicobject po ON po.m_publicid = e.m_preferredoriginid
+INNER JOIN origin o ON o._oid = po._oid
+WHERE o.m_time_value >= %s
+  AND o.m_time_value <= %s
+  AND (%s::text IS NULL OR o.m_evaluationstatus = %s::text)
+"""
+
+# Estimación de cuántas filas tendría el CSV de no picadas, sin calcularlo:
+# cuenta los pares (evento, estación) dentro del radio sobre una MUESTRA de
+# eventos y después se escala por el total. Medido: la muestra de 200 tarda
+# centésimas y estima con error de pocos puntos, mientras el conteo exacto de
+# una ventana histórica tarda decenas de segundos. El LIMIT va en la muestra.
+CONSULTA_ESTIMACION_NO_PICADAS_SQL = """
+WITH ev AS (
+    SELECT o.m_latitude_value  AS lat,
+           o.m_longitude_value AS lon
+    FROM event e
+    INNER JOIN publicobject po ON po.m_publicid = e.m_preferredoriginid
+    INNER JOIN origin o ON o._oid = po._oid
+    WHERE o.m_time_value >= %s
+      AND o.m_time_value <= %s
+      AND (%s::text IS NULL OR o.m_evaluationstatus = %s::text)
+    LIMIT %s
+),
+st AS (
+    SELECT s.m_latitude  AS lat,
+           s.m_longitude AS lon
+    FROM network net
+    INNER JOIN station s ON s._parent_oid = net._oid
+    WHERE s.m_latitude IS NOT NULL
+      AND s.m_longitude IS NOT NULL
+)
+SELECT (SELECT count(*) FROM ev) AS muestra,
+       count(*)                   AS pares
+FROM ev, st
+WHERE 6371.0 * 2 * asin(sqrt(
+        power(sin(radians(st.lat - ev.lat) / 2), 2)
+        + cos(radians(ev.lat)) * cos(radians(st.lat))
+          * power(sin(radians(st.lon - ev.lon) / 2), 2))) <= %s
+"""
+
+# Tamaño aproximado de una fila del CSV de no picadas, medido. Traduce la
+# estimación de filas a megabytes para el aviso previo.
+NO_PICADAS_BYTES_FILA = 154
+# A partir de esta estimación (en MB) la interfaz pide confirmación antes de
+# exportar. Un mes de datos a 300 km ronda los 20 MB, así que 200 avisa recién
+# en ventanas grandes (varios meses).
+AVISO_NO_PICADAS_MB = 200.0
+
+
+# ---------------------------------------------------------------------------
+# Estaciones no picadas: la lógica, sin base de datos
+# ---------------------------------------------------------------------------
+# Todo lo de esta sección es puro: recibe datos y devuelve filas, sin conexión
+# ni pantalla. Es lo que hace que se pueda probar el radio, la vigencia y la
+# cuenta de actividad sin tener una base a mano.
+RADIO_TIERRA_KM = 110.574   # Un grado de latitud, medido, no aproximado a 111
+RADIO_TIERRA_LON_KM = 111.320  # Un grado de longitud en el ecuador
+
+# Lado de las celdas del índice de estaciones, en grados. Con radio de 300 km se
+# repasa un radio de 3x3 a 7x7 celdas, así que se entra a menos celdas de las
+# que hay, y queda holgura de sobra para no perder ninguna por redondeo.
+GRADO_CELDA = 1.0
+
+
+def _distancia_km(lat1, lon1, lat2, lon2):
+    """
+    Distancia entre dos puntos de la Tierra en kilómetros.
+
+    Es la fórmula de haversine sobre una esfera de radio 6371.0088 km. A escala
+    de un radio de unos cientos de kilómetros el error contra el elipsoide es
+    de metro y medio, muy por debajo del redondeo a un decimal con el que se
+    escribe la columna, así que no vale la pena usar la fórmula de Vincenty: es
+    mucho más código para un resultado que no se distingue en el archivo.
+
+    Se usa 'latitud' para el Este/Oeste. Es aproximada (el radio de la Tierra
+    crece con la latitud), y se elige esa a propósito porque en un radio de
+    300 km el error también es de metro y medio. Importa que la dirección sea
+    la misma para todos los puntos, que es lo que acá se cumple.
+    """
+    radio = 6371.0088
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = phi2 - phi1
+    dlambda = math.radians(lon2 - lon1)
+    a = (math.sin(dphi / 2.0) ** 2
+         + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2.0) ** 2)
+    return 2.0 * radio * math.asin(min(1.0, math.sqrt(a)))
+
+
+def _celda_grado(latitud, longitud):
+    """
+    La celda del índice en la que cae un punto.
+
+    No se llama _celda como la otra de este módulo, que convierte un valor de la
+    base para escribirlo en el CSV: son cosas distintas y el mismo nombre haría
+    pensar que una usa a la otra.
+    """
+    return (int(math.floor(latitud / GRADO_CELDA)),
+            int(math.floor(longitud / GRADO_CELDA)))
+
+
+def _indice_por_celda(filas_inventario, bindings=None):
+    """
+    Agrupa el inventario por celda para no medir contra todas las estaciones.
+
+    Sin esto, con 70.000 eventos y 1.500 estaciones hay 100 millones de
+    distancias, y la exportación de un año se pasa la vida ahí. Con el índice
+    se mide solo contra las estaciones de las celdas que tocan el radio.
+
+    Cada fila del inventario es un STREAM, no una estación: la consulta valida
+    la cadena entera (red, estación, sensor location, stream) y una estación
+    puede tener varios. Por eso se guardan todas las épocas de cada nivel y el
+    par loc/cha, y el agrupamiento por estación se hace después.
+
+    'bindings', si viene, es el conjunto de (red, estación) que SeisComp tiene
+    configurado a procesar; las demás filas del inventario se descartan. Es lo
+    que hace que el listado sea "estaciones que SeisComp trabaja", no todo el
+    dataless cargado.
+
+    La deduplicación va en un conjunto aparte y no sobre el diccionario: el
+    diccionario está indexado por celda, así que preguntar ahí si un stream ya
+    estaba nunca va a dar True, porque una celda es un par de coordenadas y no
+    tiene nada que ver con un stream. Con varias bases el inventario viene
+    repetido y cada copia de más contaría como un stream más.
+    """
+    indice = {}
+    vistas = set()
+    for fila in filas_inventario:
+        red = fila.get("red")
+        estacion = fila.get("estacion")
+        if not red or not estacion:
+            continue
+        if bindings is not None and (red, estacion) not in bindings:
+            continue
+        clave = (red, estacion, fila.get("loc"), fila.get("cha"),
+                 fila.get("epoca_inicio"), fila.get("loc_inicio"),
+                 fila.get("cha_inicio"))
+        if clave in vistas:
+            continue
+        vistas.add(clave)
+        try:
+            latitud = float(fila.get("latitud"))
+            longitud = float(fila.get("longitud"))
+        except (TypeError, ValueError):
+            continue
+        if not _coordenada_valida(latitud, longitud):
+            continue
+        celda = _celda_grado(latitud, longitud)
+        indice.setdefault(celda, []).append({
+            "red": red,
+            "estacion": estacion,
+            "epoca_inicio": fila.get("epoca_inicio"),
+            "epoca_fin": fila.get("epoca_fin"),
+            "red_inicio": fila.get("red_inicio"),
+            "red_fin": fila.get("red_fin"),
+            "loc": fila.get("loc"),
+            "loc_inicio": fila.get("loc_inicio"),
+            "loc_fin": fila.get("loc_fin"),
+            "cha": fila.get("cha"),
+            "cha_inicio": fila.get("cha_inicio"),
+            "cha_fin": fila.get("cha_fin"),
+            "latitud": latitud,
+            "longitud": longitud,
+            "elevacion": fila.get("elevacion"),
+            "lugar": fila.get("lugar"),
+            "pais": fila.get("pais"),
+        })
+    return indice
+
+
+def _coordenada_valida(latitud, longitud):
+    """
+    Si el par sirve para medir una distancia en el globo.
+
+    También descarta None: el 0,0 es el valor con el que la base representa un
+    NULL en un campo de coordenadas, y una comparación con None levanta
+    TypeError, así que la comprobación tiene que ir antes que la aritmética.
+    """
+    if latitud is None or longitud is None:
+        return False
+    if not (-90.0 <= latitud <= 90.0) or not (-180.0 <= longitud <= 180.0):
+        return False
+    return not (latitud == 0.0 and longitud == 0.0)
+
+
+def _estaciones_en_el_radio(indice, latitud, longitud, radio_km):
+    """
+    Las estaciones del inventario que podrían estar dentro del radio.
+
+    Devuelve candidatos por celda, sin medir: el filtro por distancia exacta,
+    vigencia y picadas lo hace _no_picadas_de_evento. Acá solo se agranda el
+    radio una celda a cada lado para no perder ninguna por el redondeo del
+    índice.
+
+    Con radio_km=None ("sin límite") devuelve TODOS los registros del índice,
+    sin acotar por celdas: es el caso de la opción «Todo» del revisor.
+    """
+    if radio_km is None:
+        todos = []
+        for celda in indice.values():
+            todos.extend(celda)
+        return todos
+    desde_lat = latitud - radio_km / RADIO_TIERRA_KM - GRADO_CELDA
+    hasta_lat = latitud + radio_km / RADIO_TIERRA_KM + GRADO_CELDA
+    coseno = max(0.05, math.cos(math.radians(latitud)))
+    medio_lon = radio_km / (RADIO_TIERRA_LON_KM * coseno) + GRADO_CELDA
+    desde_lon = longitud - medio_lon
+    hasta_lon = longitud + medio_lon
+    candidatas = []
+    celdas = [_celda_grado(desde_lat, desde_lon),
+              _celda_grado(hasta_lat, hasta_lon)]
+    for i in range(celdas[0][0], celdas[1][0] + 1):
+        for j in range(celdas[0][1], celdas[1][1] + 1):
+            candidatas.extend(indice.get((i, j), ()))
+    return candidatas
+
+
+def _vigente(inicio, fin, instante):
+    """
+    Si una época cubre el instante.
+
+    Inicio o fin en None significan "sin límite" en ese extremo: en el
+    inventario de SeisComp una época abierta deja el fin en NULL.
+    """
+    if inicio is not None and inicio > instante:
+        return False
+    if fin is not None and fin < instante:
+        return False
+    return True
+
+
+def _stream_valido(registros, instante):
+    """
+    El stream de referencia vigente para una estación, y cuántos hay.
+
+    La cadena se valida completa: red, estación, sensor location y stream. Una
+    estación con inventario de estación vigente pero sin ningún sensor
+    location/stream vigente no es una candidata: no hay forma de sostener que
+    estuviera operativa. Si no hay ningún stream válido devuelve None.
+
+    Devuelve (registro, cantidad) donde 'registro' es el de época de estación
+    más reciente entre los vigentes (desempate por sensor location y stream),
+    que es el que se usa como referencia. 'cantidad' cuenta TODOS los streams
+    vigentes: es lo que deja claro que el de referencia no es el único.
+    """
+    vigentes = [r for r in registros
+                if _vigente(r["red_inicio"], r["red_fin"], instante)
+                and _vigente(r["epoca_inicio"], r["epoca_fin"], instante)
+                and _vigente(r["loc_inicio"], r["loc_fin"], instante)
+                and _vigente(r["cha_inicio"], r["cha_fin"], instante)]
+    if not vigentes:
+        return None, 0
+    minimo = datetime.min
+    vigentes.sort(key=lambda r: (r["epoca_inicio"] or minimo,
+                                 r["loc_inicio"] or minimo,
+                                 r["cha_inicio"] or minimo))
+    return vigentes[-1], len(vigentes)
+
+
+def _no_picadas_de_evento(instante, id_evento, id_origen, latitud, longitud,
+                          indice, picadas, actividad,
+                          radio_km=RADIO_ESTACIONES_KM,
+                          actividad_horas=ACTIVIDAD_HORAS):
+    """
+    Las estaciones con inventario vigente que no tienen arribos asociados.
+
+    'picadas' son las claves (red, estación) con al menos una llegada en este
+    evento, e 'id_origen' es el origen preferido usado como referencia.
+    'actividad' mapea cada estación a las horas de los otros eventos que la
+    picaron. Devuelve (filas, descartadas): las filas listas para el CSV,
+    ordenadas por distancia, y cuántas estaciones quedaron afuera por no tener
+    sensorlocation/stream vigente.
+
+    Lo que NO hace, y hay que decirlo claro porque el nombre invita a
+    entenderlo: no comprueba que la estación haya grabado. La base de metadatos
+    no tiene esa información; sale del inventario y de la actividad. Por eso la
+    columna de actividad va en la fila: es un indicador indirecto, no una prueba.
+
+    Con radio_km=None no hay corte de distancia: entran todas las estaciones del
+    inventario con la cadena de épocas vigente a la hora del evento (la opción
+    «Todo (sin límite)» del revisor). La fila queda con radio_km=None.
+    """
+    if not _coordenada_valida(latitud, longitud) or (
+            radio_km is not None and radio_km <= 0):
+        return [], 0
+    tolerancia = timedelta(hours=actividad_horas)
+    filas = []
+    descartadas = 0
+    # Las candidatas traen varias filas por estación (una por stream y época);
+    # se resuelven por evento, así que primero se agrupan por código.
+    por_codigo = {}
+    for estacion in _estaciones_en_el_radio(indice, latitud, longitud, radio_km):
+        por_codigo.setdefault((estacion["red"], estacion["estacion"]),
+                              []).append(estacion)
+    for codigo, registros in por_codigo.items():
+        if codigo in picadas:
+            continue
+        vigente, cantidad = _stream_valido(registros, instante)
+        if vigente is None:
+            descartadas += 1
+            continue
+        distancia = _distancia_km(latitud, longitud,
+                                  vigente["latitud"], vigente["longitud"])
+        if radio_km is not None and distancia > radio_km:
+            continue
+        horas = actividad.get(codigo)
+        if not horas:
+            cercana = 0
+        else:
+            # La lista de horas está ordenada, así que lo que cae dentro de la
+            # tolerancia es un tramo y sale de dos búsquedas.
+            desde = bisect_left(horas, instante - tolerancia)
+            hasta = bisect_right(horas, instante + tolerancia)
+            cercana = hasta - desde
+        filas.append({
+            "id_evento": id_evento,
+            "id_origen": id_origen,
+            "red": vigente["red"],
+            "estacion": vigente["estacion"],
+            "loc_ref": vigente["loc"],
+            "cha_ref": vigente["cha"],
+            "streams_vigentes": cantidad,
+            "distancia_km": round(distancia, 1),
+            "est_lat": vigente["latitud"],
+            "est_lon": vigente["longitud"],
+            "est_elev": vigente["elevacion"],
+            "est_lugar": vigente["lugar"],
+            "est_pais": vigente["pais"],
+            "radio_km": radio_km,
+            "actividad_ventana": cercana,
+            "waveform_status": ESTADO_SIN_CONSULTAR,
+            "availability_source": "",
+            "cobertura_desde": "",
+            "cobertura_hasta": "",
+        })
+    filas.sort(key=lambda f: (f["distancia_km"], f["red"], f["estacion"]))
+    return filas, descartadas
+
 
 def _bases_a_consultar(base):
     """
@@ -888,6 +1498,166 @@ def _consultar_eventos_de_base(base, inicio, fin, solo_confirmados):
     finally:
         conn.close()
     return filas, cobertura, estimadas
+
+
+def _consultar_inventario_de_base(base, inicio, fin):
+    """
+    Trae las estaciones del inventario cuya época se solapa con la ventana.
+
+    No filtra por la hora de cada evento: eso lo hace _stream_valido, porque
+    depende del evento y no de la ventana. Acá solo se traen las que podrían
+    llegar a estar vigentes en algún momento del período, que son muy pocas
+    comparadas con la tabla completa.
+
+    Si la base falla al leer el inventario se avisa y se sigue con lo que haya:
+    las estaciones no picadas son un dato derivado y su ausencia no invalida los
+    eventos ni las fases, que son la exportación en sí.
+    """
+    config = configuracion(base)
+    conn = conectar(config)
+    try:
+        cursor = crear_cursor(conn)
+        cursor.execute("SET TIME ZONE 'UTC'")
+        cursor.execute(CONSULTA_INVENTARIO_SQL, (fin, inicio))
+        filas = cursor.fetchall()
+        _medir("inventario_fin", "base=%s" % base)
+    finally:
+        conn.close()
+    return filas
+
+
+def _consultar_bindings_de_base(base):
+    """
+    Estaciones con binding habilitado: las que SeisComp está configurado a
+    procesar (subconjunto del inventario: dataless cargado sin binding no
+    cuenta).
+
+    Devuelve un conjunto de (red, estación). Si la base no tiene config o falla
+    la consulta, devuelve un conjunto vacío y el que llama decide (no filtrar).
+    """
+    config = configuracion(base)
+    conn = conectar(config)
+    try:
+        cursor = crear_cursor(conn)
+        cursor.execute("SET TIME ZONE 'UTC'")
+        cursor.execute(CONSULTA_BINDINGS_SQL)
+        filas = cursor.fetchall()
+        _medir("bindings_fin", "base=%s" % base)
+    finally:
+        conn.close()
+    return {(f.get("red"), f.get("estacion"))
+            for f in filas if f.get("red") and f.get("estacion")}
+
+
+def _consultar_actividad_de_base(base, instante, horas, solo_confirmados=True):
+    """
+    Eventos que cada estación picó dentro de ±horas del instante, en una base.
+
+    Devuelve {codigo: [instantes ordenados]}, el mismo mapa que arma la
+    exportación a partir del resumen de fases. La usa el revisor cuando amplía
+    el radio de un evento: así recalcula la actividad de las estaciones nuevas
+    sin recorrer el archivo de fases entero, y solo consulta el tramo temporal
+    del evento.
+    """
+    desde = instante - timedelta(hours=horas)
+    hasta = instante + timedelta(hours=horas)
+    config = configuracion(base)
+    conn = conectar(config)
+    try:
+        cursor = crear_cursor(conn)
+        cursor.execute("SET TIME ZONE 'UTC'")
+        cursor.execute(CONSULTA_ACTIVIDAD_SQL,
+                       (desde, hasta) + _parametros_estatus(solo_confirmados))
+        filas = cursor.fetchall()
+    finally:
+        conn.close()
+    actividad = {}
+    for fila in filas:
+        # Un origen sin hora no aporta actividad; se saltea para no romper el
+        # orden (en la base un origen válido siempre tiene m_time_value).
+        instante_fila = fila.get("instante")
+        if instante_fila is None:
+            continue
+        codigo = (fila.get("red"), fila.get("estacion"))
+        actividad.setdefault(codigo, []).append(instante_fila)
+    for horas_estacion in actividad.values():
+        horas_estacion.sort()
+    return actividad
+
+
+def no_picadas_de_evento_desde_base(base, instante, id_evento, id_origen,
+                                    latitud, longitud, picadas,
+                                    radio_km=RADIO_ESTACIONES_KM,
+                                    actividad_horas=ACTIVIDAD_HORAS,
+                                    solo_confirmados=True):
+    """
+    Recalcula las estaciones sin arribos de UN evento contra la base.
+
+    Es lo que usa el revisor cuando el usuario amplía el radio más allá del
+    corte exportado: consulta el inventario vigente a la hora del evento y la
+    actividad de las estaciones alrededor, y devuelve las filas listas para
+    mostrar y descargar. No toca los CSV de la exportación.
+
+    'base' es la del evento (columna base_datos del CSV de eventos). 'picadas'
+    son las claves (red, estación) que tienen al menos una llegada en el evento.
+    Devuelve (filas, descartadas) igual que _no_picadas_de_evento.
+    """
+    bindings = None
+    try:
+        bindings = _consultar_bindings_de_base(base) or None
+    except Exception:
+        bindings = None
+    inventario = _consultar_inventario_de_base(base, instante, instante)
+    indice = _indice_por_celda(inventario, bindings=bindings)
+    actividad = _consultar_actividad_de_base(base, instante, actividad_horas,
+                                             solo_confirmados)
+    return _no_picadas_de_evento(instante, id_evento, id_origen, latitud,
+                                 longitud, indice, picadas, actividad,
+                                 radio_km=radio_km,
+                                 actividad_horas=actividad_horas)
+
+
+def estimar_no_picadas(bases, inicio, fin, radio_km,
+                       solo_confirmados=True, muestra=200):
+    """
+    Estima (filas, MB) del CSV de no picadas de una ventana, sin exportarlo.
+
+    La usan la ventana de solicitud y el re-export para avisar ANTES de correr
+    una exportación que puede quedar enorme: el archivo crece con los eventos y
+    con el radio, y en el histórico completo pasa de un gigabyte. Cuenta una
+    muestra de eventos y la escala por el total, así que es barata incluso para
+    ventanas grandes.
+
+    Si una base no responde se la saltea: el aviso es un extra, no un requisito.
+    Devuelve filas y megabytes redondeados; (0, 0.0) si no se pudo estimar.
+    """
+    if radio_km is None or radio_km <= 0:
+        return 0, 0.0
+    parametros = (inicio, fin) + _parametros_estatus(solo_confirmados)
+    filas_estimadas = 0.0
+    for base in bases:
+        try:
+            conn = conectar(configuracion(base))
+        except Exception:
+            continue
+        try:
+            cursor = crear_cursor(conn)
+            cursor.execute("SET TIME ZONE 'UTC'")
+            cursor.execute(CONSULTA_EVENTOS_VENTANA_SQL, parametros)
+            total = cursor.fetchone().get("total") or 0
+            if not total:
+                continue
+            cursor.execute(CONSULTA_ESTIMACION_NO_PICADAS_SQL,
+                           parametros + (muestra, radio_km))
+            fila = cursor.fetchone()
+            n_muestra = fila.get("muestra") or 0
+            n_pares = fila.get("pares") or 0
+        finally:
+            conn.close()
+        if n_muestra:
+            filas_estimadas += n_pares * (float(total) / n_muestra)
+    filas = int(round(filas_estimadas))
+    return filas, filas * NO_PICADAS_BYTES_FILA / 1000000.0
 
 
 def _escribir_fases_de_base(base, inicio, fin, solo_confirmados, dueno,
@@ -1052,18 +1822,27 @@ def _aviso_cobertura(nombre, inicio, fin, cobertura):
 
 
 def exportar_ventana(inicio, fin, salida=None, base=None,
-                     solo_confirmados=True, reusar=False):
+                     solo_confirmados=True, reusar=False,
+                     radio_km=RADIO_ESTACIONES_KM,
+                     actividad_horas=ACTIVIDAD_HORAS):
     """
-    Consulta los eventos de la ventana y sus fases, y escribe los dos CSV.
+    Consulta los eventos de la ventana y sus fases, y escribe los tres CSV.
     Devuelve un diccionario con las rutas y las cantidades de filas.
 
     Por defecto sale solo lo que un analista revisó (estado "confirmed"). Con
     solo_confirmados=False entran también las soluciones automáticas, que son
     muchas más pero no son eventos publicados.
 
+    El tercer CSV, _no_picadas.csv, son las estaciones del inventario que
+    quedaron dentro de radio_km del evento y no fueron picadas. 'radio_km' fija
+    ese radio y 'actividad_horas' qué tan cerca en el tiempo tiene que haber
+    picado una estación para que se la considere activa.
+
     Con reusar=True, si esa ventana ya está exportada y completa, devuelve sus
     archivos sin consultar la base. El resultado trae "reusado": True y las
-    cantidades en None, porque las filas no se contaron otra vez.
+    cantidades en None, porque las filas no se contaron otra vez. Para que el
+    reuso siga siendo correcto ahora hacen falta los tres CSV: una exportación
+    vieja sin el de no picadas se vuelve a exportar.
     """
     if med is not None:
         # Se arranca el cronómetro acá para incluir el import de psycopg2.
@@ -1077,10 +1856,19 @@ def exportar_ventana(inicio, fin, salida=None, base=None,
         salida = ruta_datos("seiscomp_%s_%s.csv"
                             % (inicio.strftime(FORMATO), fin.strftime(FORMATO)))
     salida_fases = _ruta_fases(salida)
+    salida_no_picadas = _ruta_no_picadas(salida)
     marca = _ruta_completo(salida)
 
+    # El reuso exige que el radio coincida: si se pide uno distinto del que
+    # tiene la exportación en disco, el corte de estaciones estaría mal y hay
+    # que re-exportar. Se compara redondeado, porque la marca guarda enteros.
+    radio_marca = None
+    if reusar and os.path.isfile(marca):
+        radio_marca = _radio_de_la_marca(marca)
     if reusar and os.path.isfile(salida) and os.path.isfile(salida_fases) \
-            and os.path.isfile(marca):
+            and os.path.isfile(salida_no_picadas) and os.path.isfile(marca) \
+            and radio_marca is not None \
+            and abs(radio_marca - round(radio_km)) < 0.5:
         print("   Ventana       : %s  ->  %s  (UTC)"
               % (inicio.strftime(FORMATO), fin.strftime(FORMATO)))
         print("   [Aviso] Se reusa la exportación existente; no se consulta"
@@ -1089,10 +1877,16 @@ def exportar_ventana(inicio, fin, salida=None, base=None,
         return {
             "ruta": os.path.abspath(salida),
             "ruta_fases": os.path.abspath(salida_fases),
+            "ruta_no_picadas": os.path.abspath(salida_no_picadas),
             "eventos": None,
             "fases": None,
+            "no_picadas": None,
             "reusado": True,
         }
+    if reusar and os.path.isfile(marca) and radio_marca is not None \
+            and abs(radio_marca - round(radio_km)) >= 0.5:
+        print("   [Aviso] La exportación en disco usó radio %.0f km y se pide"
+              " %.0f km; se vuelve a exportar." % (radio_marca, radio_km))
 
     # Se borra la marca ANTES de exportar. Si esta corrida se corta, el archivo
     # puede quedar a medias y lo que no puede pasar es que la marca siga
@@ -1191,9 +1985,103 @@ def exportar_ventana(inicio, fin, salida=None, base=None,
 
     resumen = _resumen_desde_mapa(resumen_por_evento)
 
-    # La marca va al final, después de escribir las fases: es lo último que se
-    # hace, y es lo que dice que no quedó nada a medias.
-    _escribir_marca(marca, inicio, fin, len(filas), total_fases, bases)
+    # --- Estaciones no picadas ---
+    # Va después de las fases porque necesita dos cosas que solo están listas
+    # ahora: qué estaciones picaron cada evento (sale del resumen) y la hora de
+    # cada evento (está en las filas de eventos, que ya están en memoria).
+    print("   Calculando estaciones no picadas (radio %.0f km)..." % radio_km)
+    try:
+        estimadas, mb = estimar_no_picadas(bases, inicio, fin, radio_km,
+                                           solo_confirmados)
+    except Exception:
+        estimadas, mb = 0, 0.0
+    if estimadas:
+        print("      Estimado      : ~%s estaciones (~%.1f MB)."
+              % ("{:,}".format(estimadas).replace(",", "."), mb))
+        if mb >= AVISO_NO_PICADAS_MB:
+            print("      [Aviso] Es un archivo grande; considerá bajar el radio"
+                  " o partir la ventana.")
+    inventario = []
+    for nombre in bases:
+        try:
+            inventario.extend(_consultar_inventario_de_base(nombre, inicio, fin))
+        except Exception as e:
+            print("   [Aviso] No se pudo leer el inventario de %s (%s); se"
+                  " sigue sin las estaciones de esa base."
+                  % (nombre, str(e).strip().splitlines()[0]))
+
+    # Bindings: las estaciones que SeisComp tiene configurado procesar. Se
+    # acumulan entre bases y, si no hay ninguno, NO se filtra: una base sin
+    # config dejaría la lista vacía sin motivo.
+    bindings = set()
+    for nombre in bases:
+        try:
+            bindings |= _consultar_bindings_de_base(nombre)
+        except Exception as e:
+            print("   [Aviso] No se pudieron leer los bindings de %s (%s); se"
+                  " sigue sin filtrar por bindings."
+                  % (nombre, str(e).strip().splitlines()[0]))
+    if not bindings:
+        print("   [Aviso] No se encontraron bindings; se usa todo el inventario"
+              " (puede incluir dataless sin binding).")
+        bindings = None
+    indice = _indice_por_celda(inventario, bindings=bindings)
+
+    tiempos = {}
+    for fila in filas:
+        instante = fila.get("ot_utc")
+        if isinstance(instante, datetime):
+            tiempos[fila.get("id_evento")] = instante
+
+    # Actividad por estación: las horas de los eventos que picó. Es lo que
+    # separa "estaba en el inventario" de "estaba grabando".
+    actividad = {}
+    for id_evento, resumen_evento in resumen_por_evento.items():
+        instante = tiempos.get(id_evento)
+        if instante is None:
+            continue
+        for codigo in resumen_evento["estaciones"]:
+            actividad.setdefault(codigo, []).append(instante)
+    for horas in actividad.values():
+        horas.sort()
+
+    total_no_picadas = 0
+    total_descartadas = 0
+    _escribir_csv(salida_no_picadas, [], CABECERA_NO_PICADAS)
+    for fila in filas:
+        instante = tiempos.get(fila.get("id_evento"))
+        if instante is None:
+            continue
+        try:
+            latitud = float(fila.get("latitud"))
+            longitud = float(fila.get("longitud"))
+        except (TypeError, ValueError):
+            continue
+        no_picadas, descartadas = _no_picadas_de_evento(
+            instante, fila.get("id_evento"), fila.get("id_origen"),
+            latitud, longitud, indice,
+            resumen_por_evento.get(fila.get("id_evento"), {}).get("estaciones",
+                                                                  set()),
+            actividad, radio_km=radio_km, actividad_horas=actividad_horas)
+        total_descartadas += descartadas
+        if no_picadas:
+            _escribir_csv(salida_no_picadas, no_picadas,
+                          CABECERA_NO_PICADAS, append=True)
+            total_no_picadas += len(no_picadas)
+    print("      %d estaciones sin arribos de %d streams de inventario (%s)."
+          % (total_no_picadas,
+             sum(len(celda) for celda in indice.values()),
+             "con bindings" if bindings else "sin bindings"))
+    if total_descartadas:
+        print("      [Aviso] %d estaciones quedaron afuera por no tener"
+              " sensorlocation/stream vigente en la hora del evento."
+              % total_descartadas)
+    _medir("no_picadas_fin")
+
+    # La marca va al final, después de escribir los tres CSV: es lo último que
+    # se hace, y es lo que dice que no quedó nada a medias.
+    _escribir_marca(marca, inicio, fin, len(filas), total_fases,
+                    total_no_picadas, radio_km, bases, total_descartadas)
     prog.avance(1.0)
 
     return {
@@ -1201,6 +2089,10 @@ def exportar_ventana(inicio, fin, salida=None, base=None,
         "eventos": len(filas),
         "ruta_fases": os.path.abspath(salida_fases),
         "fases": total_fases,
+        "ruta_no_picadas": os.path.abspath(salida_no_picadas),
+        "no_picadas": total_no_picadas,
+        "descartadas_sin_stream": total_descartadas,
+        "radio_km": radio_km,
         "resumen_fases": resumen,
         "bases": bases,
         "eventos_por_base": {b: len(eventos_por_base.get(b, [])) for b in bases},
@@ -1228,6 +2120,8 @@ def main():
     solo_confirmados = True
     sugerencia = None
     reusar = False
+    radio_km = RADIO_ESTACIONES_KM
+    actividad_horas = ACTIVIDAD_HORAS
     resto = []
     i = 0
     while i < len(argumentos):
@@ -1269,6 +2163,41 @@ def main():
             reusar = True
             i += 1
             continue
+        if argumentos[i] == "--radio-km":
+            # El radio de la búsqueda de estaciones sin arribos. Se acepta con o
+            # sin la unidad, porque "300" y "300km" son lo mismo y no vale la
+            # pena hacer fallar el comando por eso.
+            if i + 1 >= len(argumentos):
+                print("[X] --radio-km necesita un valor en kilómetros.")
+                return 2
+            try:
+                radio_km = float(argumentos[i + 1].rstrip("kKmM"))
+            except ValueError:
+                print("[X] --radio-km debe ser un número de kilómetros"
+                      " (por ejemplo 300 o 300km).")
+                return 2
+            if radio_km <= 0:
+                print("[X] --radio-km tiene que ser mayor que cero.")
+                return 2
+            i += 2
+            continue
+        if argumentos[i] == "--actividad-h":
+            # Qué tan cerca en el tiempo tiene que haber picado una estación
+            # para contar como actividad inferida.
+            if i + 1 >= len(argumentos):
+                print("[X] --actividad-h necesita un valor en horas.")
+                return 2
+            try:
+                actividad_horas = float(argumentos[i + 1].rstrip("hH"))
+            except ValueError:
+                print("[X] --actividad-h debe ser un número de horas"
+                      " (por ejemplo 24 o 24h).")
+                return 2
+            if actividad_horas < 0:
+                print("[X] --actividad-h no puede ser negativo.")
+                return 2
+            i += 2
+            continue
         resto.append(argumentos[i])
         i += 1
     argumentos = resto
@@ -1296,6 +2225,7 @@ def main():
         print("[X] Indique inicio y término, o ninguno para que se los pregunte.")
         print("    Uso: %s [<inicio> <fin> [salida.csv]] [--base <nombre>]"
               " [--sugerencia <inicio> <fin>] [--reusar]"
+              " [--radio-km <km>] [--actividad-h <horas>]"
               % os.path.basename(__file__))
         return 2
     else:
@@ -1304,7 +2234,9 @@ def main():
     print()
     try:
         resultado = exportar_ventana(inicio, fin, salida, base,
-                                    solo_confirmados, reusar)
+                                    solo_confirmados, reusar,
+                                    radio_km=radio_km,
+                                    actividad_horas=actividad_horas)
     except FaltanParametros as e:
         print("[X] %s" % e)
         return 2
@@ -1316,6 +2248,7 @@ def main():
         print("[OK] Exportación existente reutilizada.")
         print("     Archivo: %s" % resultado["ruta"])
         print("     Archivo: %s" % resultado["ruta_fases"])
+        print("     Archivo: %s" % resultado["ruta_no_picadas"])
         return 0
 
     total = resultado["eventos"]
@@ -1332,6 +2265,25 @@ def main():
     else:
         print("[Aviso] No se encontraron lecturas de estación en la ventana.")
     print("     Archivo: %s" % resultado["ruta_fases"])
+
+    total_no_picadas = resultado.get("no_picadas") or 0
+    print()
+    if total_no_picadas:
+        print("[OK] %d estaciones sin arribos asociados dentro de %.0f km"
+              " (actividad inferida a ±%.0f h)."
+              % (total_no_picadas, resultado["radio_km"], actividad_horas))
+    else:
+        print("[Aviso] Ninguna estación del inventario quedó sin arribos"
+              " asociados dentro de %.0f km." % resultado["radio_km"])
+    descartadas = resultado.get("descartadas_sin_stream") or 0
+    if descartadas:
+        print("[Aviso] %d estaciones quedaron afuera por no tener"
+              " sensorlocation/stream vigente en la hora del evento."
+              % descartadas)
+    print("     Archivo: %s" % resultado["ruta_no_picadas"])
+    print("     Ojo: 'sin arribos' es que no tienen arrivals/picks asociados al"
+          " origen preferido, no que no hayan grabado. Para eso hay que mirar"
+          " la señal (SDS/DataAvailability).")
 
     por_base = resultado.get("eventos_por_base") or {}
     if len(por_base) > 1:

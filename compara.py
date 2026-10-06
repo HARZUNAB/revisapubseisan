@@ -85,9 +85,17 @@ def comparar(listacsv_1, listacsv_2, max_seg, max_lat, max_lon, sufijo,
     # informes de la otra. Viene vacío para Seisan, así sus nombres quedan
     # exactamente como siempre (no_pub_desde_2_5_estricto.csv lo usa app.py).
     # archivos de salida
-    archivo=open(rutas.p_informes("no_pub_todos_"+prefijo+sufijo+".txt"), "w")
+    # Los tres informes de texto se parecen pero no son lo mismo:
+    #   no_pub_todos_*      y no_pub_desde_2_5_*  son entregables: nadie los
+    #                                         relee, van a descargas/ y solo
+    #                                         con RV_ENTREGABLES=1.
+    #   no_act_*            NO es entregable: app.py lo abre para distinguir
+    #                                         "el análisis nunca corrió" de
+    #                                         "corrió y no encontró cruces". Se
+    #                                         escribe siempre en informes/.
+    archivo=rutas.entregable("no_pub_todos_"+prefijo+sufijo+".txt")
     archivo1=open(rutas.p_informes("no_act_"+prefijo+sufijo+".txt"), "w")
-    archivo2=open(rutas.p_informes("no_pub_desde_2_5_"+prefijo+sufijo+".txt"), "w")
+    archivo2=rutas.entregable("no_pub_desde_2_5_"+prefijo+sufijo+".txt")
 
     archivo.write(cabecera)
     archivo1.write(cabecera)
@@ -224,16 +232,26 @@ def comparar(listacsv_1, listacsv_2, max_seg, max_lat, max_lon, sufijo,
                 per_noper=''
         pub=0
 
-    # crea csv para eventos no publicados
-    salida=rutas.p_datos("no_pub_desde_2_5_"+prefijo+sufijo+".csv")
-    if listanopub:
-        df = pd.DataFrame(listanopub)
-        df.columns=['Fecha_Hora', 'Latitud', 'Longitud', 'Prof.', 'Mag.', 'Tipo_mag.', 'Analista']
-        df.to_csv(salida)
+    # Crea el csv de eventos no publicados. El del filtro estricto es caché: lo
+    # leen app.py y generajson para armar el listado de no publicados, así que
+    # se escribe siempre en datos/. El del amplio no lo lee nadie, va como
+    # entregable y sin RV_ENTREGABLES ni se crea ni se borra el de antes.
+    nombre_csv = "no_pub_desde_2_5_"+prefijo+sufijo+".csv"
+    if sufijo == "estricto":
+        salida = rutas.p_datos(nombre_csv)
+    elif rutas.ENTREGABLES:
+        salida = rutas.p_descargas(nombre_csv)
     else:
-        # Sin no publicados, se borra el CSV: si no, quedaría el de la corrida
-        # anterior y app.py lo leería como si fuera de esta.
-        _borrar(salida)
+        salida = None
+    if salida is not None:
+        if listanopub:
+            df = pd.DataFrame(listanopub)
+            df.columns=['Fecha_Hora', 'Latitud', 'Longitud', 'Prof.', 'Mag.', 'Tipo_mag.', 'Analista']
+            df.to_csv(salida)
+        else:
+            # Sin no publicados, se borra el CSV: si no, quedaría el de la corrida
+            # anterior y app.py lo leería como si fuera de esta.
+            _borrar(salida)
 
     # Atribución: de qué analista es cada evento publicado. Solo se toca con el
     # filtro estricto, que es el que sirve para atribuir (con el amplio se cuela
@@ -361,10 +379,13 @@ print('  eventos no publicados >= a mag. 2.5: {}'.format(totsobre2_5_estricto))
 print('  total eventos no actualizados: {}'.format(total_diferentes_estricto))
 print('  no publicados sin magnitud (no entran al CSV): {}'.format(sinmag_estricto))
 print('Archivos generados...')
-print('no_pub_todos_%samplio.txt / no_act_%samplio.txt / no_pub_desde_2_5_%samplio.txt' % (PREFIJO, PREFIJO, PREFIJO))
-print('no_pub_todos_%sestricto.txt / no_act_%sestricto.txt / no_pub_desde_2_5_%sestricto.txt' % (PREFIJO, PREFIJO, PREFIJO))
-print('no_pub_desde_2_5_%samplio.csv' % PREFIJO)
+print('no_act_%samplio.txt / no_act_%sestricto.txt' % (PREFIJO, PREFIJO))
 print('no_pub_desde_2_5_%sestricto.csv' % PREFIJO)
+if rutas.ENTREGABLES:
+    print('En descargas/: no_pub_todos_*.txt / no_pub_desde_2_5_*.txt / '
+          'no_pub_desde_2_5_*amplio.csv')
+else:
+    print('Entregables no generados (use RV_ENTREGABLES=1 si los necesita).')
 
 
 

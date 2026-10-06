@@ -43,6 +43,7 @@ from adjustText import adjust_text
 
 import asigna_perfiles as ap
 import rutas
+import descargas
 
 Image.MAX_IMAGE_PIXELS = None  # desactiva el límite de seguridad de PIL
 
@@ -1043,6 +1044,93 @@ def _texto_extencion(lon_min, lon_max, lat_min, lat_max):
 
 _ETIQUETA_FUENTE = {'seiscomp': 'SeisComp', 'seisan': 'Seisan'}
 
+# Columnas con que se baja el listado de eventos del panel de análisis.
+# Lleva lo mismo que muestra la viñeta del evento, para que el archivo y la
+# pantalla se puedan leer juntos: identificador, posición, magnitud, perfil,
+# distancia a la estación asignada y el motivo de la asignación.
+COLUMNAS_DESCARGA_EVENTO = [
+    ("id", "Id", 70),
+    ("fecha hora", "Fecha y hora", 150),
+    ("latitud", "Latitud", 90),
+    ("longitud", "Longitud", 90),
+    ("prof", "Prof. km", 80),
+    ("magnitud", "Mag.", 70),
+    ("tipo", "Tipo mag.", 80),
+    ("perfil", "Perfil", 70),
+    ("sospechoso", "Sospechoso", 90),
+    ("percibido", "Percibido", 80),
+    ("analistas", "Analista(s)", 130),
+    ("along_km", "Along (km)", 95),
+    ("perp_km", "Perp (km)", 95),
+    ("residuo_km", "Residuo (km)", 95),
+    ("dist_asoc", "Dist. asoc. (km)", 100),
+    ("motivo", "Motivo", 130),
+]
+
+
+def _valor_descarga(valor):
+    """
+    Un valor del JSON listo para una celda del archivo.
+
+    Los booleanos van como sí/no y no como True/False: el archivo lo lee otra
+    persona y «True» en una columna de sospechosos no dice nada. Lo que falta
+    va vacío, que es lo que distingue un dato ausente de un cero.
+    """
+    if valor is None:
+        return ""
+    if isinstance(valor, bool):
+        return "sí" if valor else "no"
+    if isinstance(valor, (list, tuple)):
+        return ", ".join(str(v) for v in valor)
+    return str(valor)
+
+
+def _analistas_de_descarga(ev):
+    """
+    Los analistas del evento en una celda, con la fuente de cada uno.
+
+    El JSON trae 'analistas' como lista de entradas, cada una con su fuente y
+    sus nombres, así que no se puede volcar tal cual: saldría la
+    representación del diccionario. Se aplana a "Seisan: Jere; SeisComp: mdur"
+    porque, cuando las fuentes no coinciden, el desacuerdo es información que
+    hay que conservar (ver _lineas_posible_analista).
+    """
+    entradas = ev.get("analistas")
+    if not entradas:
+        # Fuente única: el dato viene plano en 'analista'.
+        return _valor_descarga(ev.get("analista"))
+    textos = []
+    for entrada in entradas:
+        if not isinstance(entrada, dict):
+            textos.append(_valor_descarga(entrada))
+            continue
+        nombres = entrada.get("analistas") or []
+        if isinstance(nombres, str):
+            nombres = [nombres]
+        if not nombres:
+            continue
+        fuente = _ETIQUETA_FUENTE.get(entrada.get("fuente"),
+                                      entrada.get("fuente") or "")
+        nombres_txt = ", ".join(str(n) for n in nombres)
+        textos.append("%s: %s" % (fuente, nombres_txt) if fuente
+                      else nombres_txt)
+    return "; ".join(textos)
+
+
+def _fila_descarga(ev):
+    """Una fila del archivo, en el orden de COLUMNAS_DESCARGA_EVENTO."""
+    fila = []
+    for clave, _titulo, _ancho in COLUMNAS_DESCARGA_EVENTO:
+        if clave == "analistas":
+            fila.append(_analistas_de_descarga(ev))
+        elif clave in ("latitud", "longitud"):
+            fila.append(_numero_evento(ev.get(clave), 3))
+        elif clave in ("prof", "magnitud"):
+            fila.append(_numero_evento(ev.get(clave), 1))
+        else:
+            fila.append(_valor_descarga(ev.get(clave)))
+    return fila
+
 
 def _lineas_posible_analista(ev):
     """
@@ -1113,14 +1201,32 @@ def _lineas_posible_analista(ev):
     return []
 
 
+def _numero_evento(valor, decimales):
+    """
+    Formatea un número con N decimales, o devuelve el texto tal cual.
+
+    Los eventos traen lat/lon como float y prof/magnitud a veces como texto; si
+    el valor falta o no es numérico se muestra crudo (o vacío) en vez de
+    romper. Lo usan la viñeta y la descarga, que deben coincidir.
+    """
+    if valor is None or str(valor).strip() == "":
+        return ""
+    try:
+        return "%.*f" % (decimales, float(valor))
+    except (TypeError, ValueError):
+        return str(valor)
+
+
 def _texto_parametros_evento(ev):
     """Texto multilínea con los parámetros del evento para la viñeta."""
     lineas = [
         "id: %s" % ev.get('id', ''),
         "fecha hora: %s" % ev.get('fecha hora', ''),
-        "lat: %s   lon: %s" % (ev.get('latitud', ''), ev.get('longitud', '')),
-        "prof: %s km" % ev.get('prof', ''),
-        "magnitud: %s   tipo: %s" % (ev.get('magnitud', ''), ev.get('tipo', '')),
+        "lat: %s   lon: %s" % (_numero_evento(ev.get('latitud'), 3),
+                               _numero_evento(ev.get('longitud'), 3)),
+        "prof: %s km" % _numero_evento(ev.get('prof'), 1),
+        "magnitud: %s   tipo: %s" % (_numero_evento(ev.get('magnitud'), 1),
+                                     ev.get('tipo', '')),
     ]
     if 'percibido' in ev:
         lineas.append("percibido: %s" % ev['percibido'])
@@ -1552,6 +1658,73 @@ def _mostrar_figura(bloquear):
         plt.show(block=False)
 
 
+def _estilar_toolbar_figura(fig):
+    """
+    Pinta los botones del toolbar con los colores del tema de ttkbootstrap.
+
+    matplotlib arma su toolbar con widgets tk clasicos (tk.Button y
+    tk.Checkbutton), y ttkbootstrap intercepta los constructores de esos
+    widgets para darles el tema: les pone de fondo colors.primary. Con el tema
+    'flatly' de la app ese color es un azul marino, y los botones quedaban
+    oscuros. Peor: los iconos de matplotlib son PNG con trazo negro, que sobre
+    ese azul no se leen.
+
+    Se repinta cada boton con el fondo y el texto del tema, y se les deja un
+    borde de 1 pixel para que se separen entre si (ttkbootstrap los deja con
+    relief='flat' y borderwidth=0, o sea pegados).
+
+    Pan y Zoom son Checkbutton con indicatoron=False: su unica forma de mostrar
+    el estado pulsado es -selectcolor, asi que se les pone. No se hace en los
+    tk.Button porque -selectcolor no es una opcion valida ahi y TclError.
+
+    Si la app no esta corriendo (plotear.py desde la linea de comandos no
+    importa ttkbootstrap) no se toca nada: el toolbar se queda con el gris
+    claro de matplotlib, que ya se ve bien.
+    """
+    toolbar = getattr(getattr(fig.canvas, 'manager', None), 'toolbar', None)
+    if toolbar is None:
+        return
+    if 'ttkbootstrap' not in sys.modules:
+        return
+    try:
+        from ttkbootstrap.style import Style
+        colores = Style.get_instance().colors
+        fondo = colores.bg
+        texto = colores.fg
+        pulsado = colores.selectbg
+        texto_pulsado = colores.selectfg
+        borde = colores.border
+    except Exception:
+        # Sin instancia de Style todavia: se deja el toolbar como esta.
+        return
+
+    def _pintar(widget, **opciones):
+        try:
+            widget.configure(**opciones)
+        except Exception:
+            pass
+
+    _pintar(toolbar, background=fondo)
+    etiqueta = getattr(toolbar, '_message_label', None)
+    if etiqueta is not None:
+        _pintar(etiqueta, background=fondo, foreground=texto)
+
+    for boton in getattr(toolbar, '_buttons', {}).values():
+        opciones = {
+            'background': fondo,
+            'foreground': texto,
+            'activebackground': pulsado,
+            'activeforeground': texto_pulsado,
+            'highlightbackground': borde,
+            'relief': 'flat',
+            'borderwidth': 1,
+        }
+        if boton.winfo_class() == 'Checkbutton':
+            # Es lo que dibuja el modo activo en Pan/Zoom.
+            opciones['selectcolor'] = pulsado
+        _pintar(boton, **opciones)
+
+
 def _indicador_modo_interaccion(fig):
     """
     Muestra el modo activo del toolbar (ZOOM/PAN) y cambia el cursor.
@@ -1575,6 +1748,7 @@ def _indicador_modo_interaccion(fig):
     toolbar = getattr(getattr(fig.canvas, 'manager', None), 'toolbar', None)
     if toolbar is None:
         return
+    _estilar_toolbar_figura(fig)
     canvas = fig.canvas
     tk_canvas = None
     try:
@@ -2282,6 +2456,148 @@ def _panel_analisis(grupos, perfiles_por_id, sin_perfil, fuente,
         estado['percibidos'] += p_
         _actualizar_resumen()
 
+    def _eventos_descarga(evs):
+        """
+        Los eventos a descargar, con el filtro de sospechosos aplicado.
+
+        Se filtra evento por evento igual que hace el detalle: el filtro «Solo
+        sospechosos» saca del árbol los perfiles que no tienen ninguno, pero no
+        saca los eventos normales de un perfil que sí tiene, y una descarga
+        que se llevara todos esos eventos no sería lo que se está viendo.
+        """
+        if estado['filtro_sospechosos']:
+            return [ev for ev in evs if ev.get('sospechoso')]
+        return list(evs)
+
+    def _elegir_ambito_descarga():
+        """
+        Diálogo de qué parte del panel se quiere descargar.
+
+        Devuelve (eventos, etiqueta) ya resueltos, o None si se cancela o no
+        hay nada que ofrecer. Se resuelve acá adentro y no en _descargar_panel
+        porque la alternativa depende de qué fila esté seleccionada en el
+        momento de armar el diálogo: si se volviera a leer la selección
+        después de responder, el diálogo podría ofrecer un ámbito y exportar
+        otro, o no exportar nada sin decir por qué.
+        """
+        if not estado['activo']:
+            return None
+        if raiz is None:
+            return None
+
+        sel = arbol.selection()
+        pid_sel = None
+        if sel:
+            idx = arbol.index(sel[0])
+            if idx < len(filas):
+                pid_sel = filas[idx]
+
+        # Cada opción trae sus eventos ya filtrados. Una opción sin eventos no
+        # se ofrece: es mejor no=listarla que listar algo que al elegirlo
+        # resulta en "no hay eventos".
+        opciones = []
+        if pid_sel is not None:
+            evs = _eventos_descarga(grupos[pid_sel])
+            if evs:
+                opciones.append((
+                    "perfil",
+                    "Perfil seleccionado (%s) — %d eventos"
+                    % (pid_sel, len(evs)),
+                    evs, "perfil_%s_%s" % (pid_sel, fuente)))
+        evs_visibles = []
+        for pid in filas:
+            evs_visibles.extend(_eventos_descarga(grupos[pid]))
+        if evs_visibles:
+            opciones.append((
+                "visibles",
+                "Todos los perfiles visibles — %d eventos" % len(evs_visibles),
+                evs_visibles, "panel_%s" % fuente))
+        if sin_perfil:
+            evs_sin = _eventos_descarga(sin_perfil)
+            if evs_sin:
+                opciones.append((
+                    "sin_perfil",
+                    "Eventos sin perfil — %d eventos" % len(evs_sin),
+                    evs_sin, "sin_perfil_%s" % fuente))
+
+        if not opciones:
+            from tkinter import messagebox
+            # El foco se sube antes de abrir el aviso: messagebox es bloqueante,
+            # así que pasarlo a encima_de solo lo enfocaría al cerrarse.
+            descargas.encima_de(raiz)
+            messagebox.showwarning(
+                "No hay eventos que descargar.",
+                "Con el filtro actual no queda ningún evento en el panel.\n\n"
+                "Si está prendido «Solo sospechosos», ningún perfil visible "
+                "tiene eventos sospechosos.",
+                parent=raiz)
+            return None
+
+        eleccion = {"opcion": None}
+        top = tk.Toplevel(raiz)
+        top.title("Descargar eventos")
+        top.transient(raiz)
+        top.resizable(False, False)
+        marco = ttk.Frame(top, padding=12)
+        marco.pack(fill='both', expand=True)
+        ttk.Label(marco, text="¿Qué querés descargar?").pack(anchor='w')
+        marco_op = ttk.Frame(marco)
+        marco_op.pack(anchor='w', fill='x', pady=(6, 4))
+        # Una sola variable para todas: hace que sean un grupo excluyente.
+        # Con una por opción, al marcar la segunda la primera sigue
+        # apareciendo marcada y no se puede desmarcar ninguna.
+        var = tk.StringVar(value=opciones[0][0])
+        for clave, texto, _evs, _etiqueta in opciones:
+            ttk.Radiobutton(marco_op, text=texto, value=clave,
+                            variable=var).pack(anchor='w')
+        if estado['filtro_sospechosos']:
+            descargas._etiqueta_secundaria(
+                ttk, marco,
+                "Solo sospechosos: se exportarán únicamente los eventos "
+                "sospechosos, porque el filtro está prendido.",
+                wraplength=380, justify='left').pack(anchor='w', pady=(4, 0))
+
+        def _aceptar(_evento=None):
+            eleccion['opcion'] = var.get()
+            top.destroy()
+
+        def _cancelar(_evento=None):
+            top.destroy()
+
+        botones = ttk.Frame(marco)
+        botones.pack(anchor='e', pady=(10, 0))
+        try:
+            ttk.Button(botones, text="Cancelar", command=_cancelar,
+                       bootstyle="secondary").pack(side='right')
+            ttk.Button(botones, text="Continuar", command=_aceptar,
+                       bootstyle="primary").pack(side='right', padx=(0, 6))
+        except Exception:
+            ttk.Button(botones, text="Cancelar",
+                       command=_cancelar).pack(side='right')
+            ttk.Button(botones, text="Continuar",
+                       command=_aceptar).pack(side='right', padx=(0, 6))
+        top.bind("<Return>", _aceptar)
+        top.bind("<Escape>", _cancelar)
+        top.protocol("WM_DELETE_WINDOW", _cancelar)
+        descargas.encima_de(raiz, top)
+        raiz.wait_window(top)
+        elegida = eleccion['opcion']
+        for clave, _texto, evs, etiqueta in opciones:
+            if clave == elegida:
+                return evs, etiqueta
+        return None
+
+    def _descargar_panel():
+        """Arma la lista de eventos del ámbito pedido y la pasa a descargas."""
+        elegido = _elegir_ambito_descarga()
+        if elegido is None:
+            return
+        evs, etiqueta = elegido
+        encabezados = [titulo for _, titulo, _ in COLUMNAS_DESCARGA_EVENTO]
+        filas_csv = [_fila_descarga(ev) for ev in evs]
+        descargas.descargar_tabla(raiz, encabezados, filas_csv, etiqueta,
+                                  aviso=True)
+
     def _abrir_territorios():
         if not estado['activo']:
             return
@@ -2477,6 +2793,7 @@ def _panel_analisis(grupos, perfiles_por_id, sin_perfil, fuente,
     chk_hist = ttk.Checkbutton(marco_botones, text="Sismicidad histórica",
                                variable=var_hist, command=_alternar_hist)
     chk_hist.pack(side='left', padx=8)
+    _boton(marco_botones, "Descargar", _descargar_panel)
     # Solo la ventana propia lleva botón de salida. En el panel embebido el
     # botón «Cerrar panel» se quitó: vaciaba los widgets sin avisarle a la
     # aplicación, que seguía creyendo que el panel estaba construido, así que

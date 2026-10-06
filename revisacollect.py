@@ -50,8 +50,8 @@ for linea in archivo:
 # Archvos .txt de entrada y salida
 archivo1=open(rutas.p_trabajo("newcollect_1.txt"))
 archivo2=open(rutas.p_trabajo('newcollect_2.txt'), "w")
-archivo4=open(rutas.p_informes('constation0.txt'), "w")
-archivo5=open(rutas.p_informes('sinestructura.txt'), "w")
+archivo4=rutas.entregable('constation0.txt')
+archivo5=rutas.entregable('sinestructura.txt')
 
 sinestruc=0
 concero=0
@@ -200,61 +200,70 @@ remove(rutas.p_trabajo('salida_collect_sort.csv'))
 remove(rutas.p_trabajo('newcollect.txt'))
 os.rename(rutas.p_trabajo('newcollect_final.txt'), rutas.p_trabajo('newcollect.txt'))
 
-# Carga dataframe df_final para crear .csv por analista en una nueva carpeta llamada analistas
-# configura que si hay 1 letra de diferencia (o menos), se unen
-DISTANCIA_MAXIMA = 1
+# Los .csv por analista son un entregable: nadie los relee, la app no los abre
+# y se regeneran desde datos/salida_collect.csv, que sí es caché. El bloque
+# entero va detrás del flag porque la unificación de nombres es cuadrática
+# sobre la cantidad de analistas distintos: con muchos nombres es de las partes
+# más lentas del script y solo servía para estos archivos.
+if rutas.ENTREGABLES:
+    # configura que si hay 1 letra de diferencia (o menos), se unen
+    DISTANCIA_MAXIMA = 1
 
-df_final['Analista_Clean'] = df_final['Analista'].astype(str).str.strip().str.lower()
-nombres_unicos = sorted(df_final['Analista_Clean'].unique(), key=len, reverse=True)
+    df_final['Analista_Clean'] = df_final['Analista'].astype(str).str.strip().str.lower()
+    nombres_unicos = sorted(df_final['Analista_Clean'].unique(), key=len, reverse=True)
 
-mapeo_unificado = {}
-ya_asignados = set()
+    mapeo_unificado = {}
+    ya_asignados = set()
 
-# distancia absoluta
-for i, nombre in enumerate(nombres_unicos):
-    if nombre in ya_asignados:
-        continue
-    
-    # El primer nombre que encuentra de este grupo será el "nombre maestro"
-    mapeo_unificado[nombre] = nombre
-    ya_asignados.add(nombre)
-    
-    # Compara con el resto de nombres
-    for j in range(i + 1, len(nombres_unicos)):
-        otro_nombre = nombres_unicos[j]
-        if otro_nombre in ya_asignados:
+    # distancia absoluta
+    for i, nombre in enumerate(nombres_unicos):
+        if nombre in ya_asignados:
             continue
-            
-        # Calcula cuántos cambios hay entre un nombre y otro
-        distancia = Levenshtein.distance(nombre, otro_nombre)
-        
-        if distancia <= DISTANCIA_MAXIMA:
-            mapeo_unificado[otro_nombre] = nombre
-            ya_asignados.add(otro_nombre)
-            #print(f"Unificando: '{otro_nombre}' -> '{nombre}' (Caracteres diferentes: {distancia})")
 
-# Aplica el mapeo al DataFrame
-df_final['Analista_Final'] = df_final['Analista_Clean'].map(mapeo_unificado)
+        # El primer nombre que encuentra de este grupo será el "nombre maestro"
+        mapeo_unificado[nombre] = nombre
+        ya_asignados.add(nombre)
 
-# Guarda archivos .csv por analistas en carpeta analistas
-carpeta_destino = rutas.DIR_ANALISTAS
-if not os.path.exists(carpeta_destino):
-    os.makedirs(carpeta_destino)
-	
-creados=0
+        # Compara con el resto de nombres
+        for j in range(i + 1, len(nombres_unicos)):
+            otro_nombre = nombres_unicos[j]
+            if otro_nombre in ya_asignados:
+                continue
 
-for nombre_maestro, datos in df_final.groupby('Analista_Final'):
-	nombre_archivo = f"{nombre_maestro.replace(' ', '_')}.csv"
-	ruta_completa = os.path.join(carpeta_destino, nombre_archivo)
+            # Calcula cuántos cambios hay entre un nombre y otro
+            distancia = Levenshtein.distance(nombre, otro_nombre)
 
-	# Guarda sin las columnas de proceso
-	columnas_a_guardar = [c for c in datos.columns if c not in ['Analista_Clean', 'Analista_Final']]
-	datos[columnas_a_guardar].to_csv(ruta_completa, index=False, encoding='utf-8-sig')
+            if distancia <= DISTANCIA_MAXIMA:
+                mapeo_unificado[otro_nombre] = nombre
+                ya_asignados.add(otro_nombre)
 
-	creados+=1
+    # Aplica el mapeo al DataFrame
+    df_final['Analista_Final'] = df_final['Analista_Clean'].map(mapeo_unificado)
 
-if creados > 0:
-	print(f"✅ archivos .csv de sismos por analista creados en carpeta", carpeta_destino)
+    # Guarda un .csv por analista. Van en descargas/analistas/ porque son
+    # entregables: no los relee nadie y se regeneran desde la caché.
+    carpeta_destino = rutas.p_descargas("analistas")
+    if not os.path.exists(carpeta_destino):
+        os.makedirs(carpeta_destino)
+
+    creados=0
+
+    for nombre_maestro, datos in df_final.groupby('Analista_Final'):
+        nombre_archivo = f"{nombre_maestro.replace(' ', '_')}.csv"
+        ruta_completa = os.path.join(carpeta_destino, nombre_archivo)
+
+        # Guarda sin las columnas de proceso
+        columnas_a_guardar = [c for c in datos.columns if c not in ['Analista_Clean', 'Analista_Final']]
+        datos[columnas_a_guardar].to_csv(ruta_completa, index=False, encoding='utf-8-sig')
+
+        creados+=1
+
+    if creados > 0:
+        print(f"✅ archivos .csv de sismos por analista creados en carpeta "
+              f"{carpeta_destino}")
+else:
+    print("ℹ️  .csv por analista no generados (use RV_ENTREGABLES=1 si los "
+          "necesita).")
 
 """
 # solo crea .csv para cada analista o nombre distinto
@@ -295,9 +304,13 @@ print('eventos sin estructura:', sinestruc)
 print('eventos con station0:', concero)
 print('Archivos generados...')
 print(archivo3.name)
-print(archivo4.name)
-print(archivo5.name)
 print(salida)
+if rutas.ENTREGABLES:
+	print(archivo4.name)
+	print(archivo5.name)
+else:
+	print('constation0.txt y sinestructura.txt no generados '
+		  '(use RV_ENTREGABLES=1 si los necesita)')
 
 
 

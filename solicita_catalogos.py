@@ -43,10 +43,12 @@ from datetime import datetime
 
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
+from ttkbootstrap.dialogs import Messagebox
 from ttkbootstrap.scrolled import ScrolledText
 
 import rutas
 import traer_catalogos as tc
+import exporta_ventana_seiscomp as ev
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PY = sys.executable
@@ -113,7 +115,10 @@ class App:
         self.botones = []
         self._inicio = None
         self._fin = None
+        self._inicio_dt = None
+        self._fin_dt = None
         self._pass = ""
+        self._radio = ev.RADIO_ESTACIONES_KM
 
         self.plan_etapas = None
         self.etapa_base = 0.0
@@ -184,12 +189,20 @@ class App:
         ttk.Label(campos, text="Contraseña %s@%s"
                   % (tc.USUARIO_REMOTO, tc.IP_REMOTA),
                   width=26).grid(row=2, column=0, sticky=W)
+        ttk.Label(campos, text="Radio de estaciones SeisComp (km)",
+                  width=26).grid(row=3, column=0, sticky=W)
         self.ent_ini = ttk.Entry(campos, width=22)
         self.ent_ini.grid(row=0, column=1, sticky=W, pady=2)
         self.ent_fin = ttk.Entry(campos, width=22)
         self.ent_fin.grid(row=1, column=1, sticky=W, pady=2)
         self.ent_pass = ttk.Entry(campos, width=22, show="*")
         self.ent_pass.grid(row=2, column=1, sticky=W, pady=2)
+        # Radio con el que se corta la lista de estaciones sin arribos. Es un
+        # tope de tamaño del archivo: el revisor después puede ampliarlo por
+        # evento contra la base sin re-exportar.
+        self.ent_radio = ttk.Entry(campos, width=22)
+        self.ent_radio.insert(0, "%g" % ev.RADIO_ESTACIONES_KM)
+        self.ent_radio.grid(row=3, column=1, sticky=W, pady=2)
 
         # Indicador en vivo de qué hay en disco para la ventana escrita.
         self.estado_archivos = ttk.Label(marco, text="En disco —",
@@ -200,7 +213,7 @@ class App:
         self.nota_deteccion = ttk.Label(marco, text="", bootstyle="secondary",
                                         wraplength=600)
         self.nota_deteccion.pack(anchor=W)
-        for entrada in (self.ent_ini, self.ent_fin):
+        for entrada in (self.ent_ini, self.ent_fin, self.ent_radio):
             entrada.bind("<KeyRelease>", self._al_editar_fecha)
 
         self.aviso = ttk.Label(marco, text="", bootstyle="danger",
@@ -365,18 +378,35 @@ class App:
         return [nombre for _etiqueta, nombre, ok
                 in self._archivos_ventana(inicio14, fin14) if not ok]
 
-    def _seiscomp_reusa(self, inicio14, fin14):
+    def _seiscomp_reusa(self, inicio14, fin14, radio=None):
         """Si la exportación de SeisComp de esa ventana ya está completa.
 
         Reusa el mismo criterio que exporta_ventana_seiscomp.py --reusar: los
-        dos CSV y la marca de fin. Sirve para avisar que la etapa larga no va
-        a tocar la base.
+        tres CSV, la marca de fin y que el radio coincida. Sirve para avisar que
+        la etapa larga no va a tocar la base.
+
+        El CSV de no picadas se exige por la misma razón que la marca: es lo que
+        alimenta la solapa de estaciones del revisor. Una ventana exportada
+        antes de que ese archivo existiera se vuelve a exportar, aunque tenga la
+        marca, porque sin él la ventana saldría a medias sin avisar.
+
+        El radio también se compara: si se pide uno distinto del que tiene la
+        exportación en disco, el corte de estaciones estaría mal y hay que
+        re-exportar. Con radio None solo se mira que existan los archivos.
         """
         base = os.path.join("datos", "seiscomp_%s_%s.csv" % (inicio14, fin14))
         fases = os.path.join("datos",
                              "seiscomp_%s_%s_fases.csv" % (inicio14, fin14))
+        no_picadas = os.path.join(
+            "datos", "seiscomp_%s_%s_no_picadas.csv" % (inicio14, fin14))
         marca = base + ".completo"
-        return all(_hay_archivo(r) for r in (base, fases, marca))
+        if not all(_hay_archivo(r) for r in (base, fases, no_picadas, marca)):
+            return False
+        if radio is None:
+            return True
+        radio_marca = ev._radio_de_la_marca(marca)
+        return (radio_marca is not None
+                and abs(radio_marca - round(radio)) < 0.5)
 
     def _refrescar_estado_archivos(self):
         """Pinta el indicador en vivo de lo que hay para la ventana escrita.
@@ -398,11 +428,20 @@ class App:
         for etiqueta, _nombre, ok in self._archivos_ventana(ini[1], fin[1]):
             partes.append("%s: %s" % (etiqueta, "sí" if ok else "no"))
         partes.append("SeisComp %s"
-                      % ("se reusará" if self._seiscomp_reusa(ini[1], fin[1])
+                      % ("se reusará" if self._seiscomp_reusa(
+                          ini[1], fin[1], self._radio_actual())
                          else "se consultará"))
         self.estado_archivos.configure(
             text="En disco — " + " · ".join(partes),
             bootstyle="secondary")
+
+    def _radio_actual(self):
+        """El radio escrito, o el por defecto si todavía no es un número válido."""
+        try:
+            valor = float((self.ent_radio.get() or "").strip().rstrip("kKmM"))
+        except ValueError:
+            return ev.RADIO_ESTACIONES_KM
+        return valor if valor > 0 else ev.RADIO_ESTACIONES_KM
 
     def _al_editar_fecha(self, _evento=None):
         """Reactualiza el indicador y se lleva el aviso de error viejo.
@@ -435,13 +474,25 @@ class App:
         if fin[0] <= ini[0]:
             self.aviso.configure(text="El fin debe ser posterior al inicio.")
             return False
+        try:
+            radio = float((self.ent_radio.get() or "").strip().rstrip("kKmM"))
+        except ValueError:
+            self.aviso.configure(
+                text="El radio debe ser un número de kilómetros (p. ej. 300).")
+            return False
+        if radio <= 0:
+            self.aviso.configure(text="El radio debe ser mayor que cero.")
+            return False
         if pedir_pass and not self.ent_pass.get():
             self.aviso.configure(
                 text="Falta la contraseña del servidor %s." % tc.IP_REMOTA)
             return False
         self._inicio = ini[1]
         self._fin = fin[1]
+        self._inicio_dt = ini[0]
+        self._fin_dt = fin[0]
         self._pass = self.ent_pass.get()
+        self._radio = radio
         return True
 
     def _solicitar(self):
@@ -468,9 +519,40 @@ class App:
             return
         if not self._validar_campos(pedir_pass=(modo == "descargar")):
             return
+        if not self._confirmar_tamano_seiscomp():
+            return
         self._set_trabajando(True)
         threading.Thread(target=self._tarea, args=(modo,),
                          daemon=True).start()
+
+    def _confirmar_tamano_seiscomp(self):
+        """Pide confirmación si la exportación de SeisComp quedaría enorme.
+
+        Solo cuando la exportación se va a correr (si se reutiliza, no hay nada
+        que estimar) y si la base responde: el aviso es un extra, no un
+        requisito, así que ante cualquier error se sigue sin preguntar.
+        """
+        if self._inicio is None or self._fin is None:
+            return True
+        try:
+            if self._seiscomp_reusa(self._inicio, self._fin, self._radio):
+                return True
+        except Exception:
+            pass
+        try:
+            bases = ev._bases_a_consultar(None)
+            _filas, mb = ev.estimar_no_picadas(
+                bases, self._inicio_dt, self._fin_dt, self._radio)
+        except Exception:
+            return True
+        if mb < ev.AVISO_NO_PICADAS_MB:
+            return True
+        texto = ("Con radio %.0f km esta ventana generaría alrededor de %.0f MB"
+                 " de estaciones sin arribos. El revisor lo escanea al abrir y"
+                 " puede tardar.\n\n¿Continuar?" % (self._radio, mb))
+        return Messagebox.show_question(
+            texto, "Exportación grande", parent=self.raiz,
+            buttons=["Continuar:primary", "Cancelar"]) == "Continuar"
 
     def _set_trabajando(self, valor):
         self.trabajando = valor
@@ -591,10 +673,11 @@ class App:
                 "El entorno no está listo; no se exportó SeisComp (ver el "
                 "registro).")
         self._fijar_etapa(i_exporta)
-        self._log("***** Exportando SeisComp (%s - %s) *****"
-                  % (inicio14, fin14))
+        self._log("***** Exportando SeisComp (%s - %s, radio %.0f km) *****"
+                  % (inicio14, fin14, self._radio))
         exportador = os.path.join(SCRIPT_DIR, "exporta_ventana_seiscomp.py")
-        if self._popen([exportador, "--reusar", inicio14, fin14]) != 0:
+        if self._popen([exportador, "--reusar", "--radio-km", "%g" % self._radio,
+                        inicio14, fin14]) != 0:
             raise RuntimeError("La exportación de SeisComp falló (ver el "
                                "registro).")
 

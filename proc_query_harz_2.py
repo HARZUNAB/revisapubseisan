@@ -44,19 +44,18 @@ csv_file = open(sys.argv[1])
 fh = open(sys.argv[2],"w")
 csvreader = csv.reader(csv_file)
 
-# Asigna datos del csv de origen
-#csvData = pandasForSortingCSV.read_csv(csv_file)
-csvData = pd.read_csv(csv_file)
-num_total = len(csvData)
-                                         
-# Ordena datos por fecha
-csvData = csvData.sort_values(["time"], ascending=True)
-
-# Crea archivo .csv ordenado
-fecha_hoy_csv = datetime.datetime.today().strftime("%Y%m%d%H%M%S")
-salidacsv = rutas.p_trabajo('csvData_' + fecha_hoy_csv + '.csv')
-csvData.to_csv(salidacsv)
-
+# El total de eventos se cuenta leyendo solo la primera columna, en vez de
+# pd.read_csv completo. Ese read servía para el sort y para el
+# csvData_<fecha>.csv ordenado, que se escribía y se borraba sin que nadie lo
+# leyera: el script vuelve a abrir el original más abajo y arma el diccionario
+# desde ahí, ordenando por llave al final. Medido sobre un CSV de 25 MB, el sort
+# más la copia que se escribían acá costaban 2.2 s, y el read entero 0.24 s
+# contra 0.16 s de leer una sola columna.
+#
+# No se cuenta con len(lineas) porque un salto de línea dentro de un campo
+# entrecomillado (un comentario, por ejemplo) no es una fila nueva: el conteo
+# físico contiguousía de más y la barra de progreso se passes de 1.
+num_total = len(pd.read_csv(sys.argv[1], usecols=[0]))
 
 csvData = open(sys.argv[1], encoding='utf-8')
 fh = open(sys.argv[2],"w")
@@ -136,12 +135,8 @@ if num_datos>0:
 	print(salida)
 	print(sys.argv[2])
 	print(salida2)
-	# Sacar comentario si se desea borrar este archivo
-	remove(salidacsv)
 	exit()
 else:
 	remove(sys.argv[2])
-	remove(salidacsv)
-	#print('no eliminado', salidacsv)
 	print('¡¡¡¡¡ No existen datos !!!!!')
 

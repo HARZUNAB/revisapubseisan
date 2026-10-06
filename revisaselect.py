@@ -11,7 +11,7 @@ numeventos_exclu=0
 archivo=open("select.out", 'r', encoding='latin-1')
 newcollect=open(rutas.p_trabajo("newcollect.txt"), "w")
 excluidostmp1=open(rutas.p_trabajo("excluidostmp1.txt"), "w")
-cabeceras=open(rutas.p_informes("cabeceras.txt"), "w")
+cabeceras=rutas.entregable("cabeceras.txt")
 lineacollect=''
 lineacollect_aux=''
 tienerms=''

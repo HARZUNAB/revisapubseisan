@@ -68,12 +68,20 @@ que pueda, y al abrir la aplicación avisa cuáles quedaron afuera (etiqueta en 
 barra, diálogo y Registro). Solo en ese caso se habilita el botón de
 «Re-exportar» correspondiente.
 
-- **SeisComp** se re-exporta corriendo el exportador (sin contraseña) y refresca
-  solo su panel.
+- **SeisComp** se re-exporta corriendo el exportador (sin contraseña).
 - **Seisan / eventquery** se vuelven a bajar por SSH; la aplicación pide la
-  contraseña en el momento. Como cambian los catálogos, el análisis queda
-  obsoleto y la aplicación ofrece (imponiendo) volver a «Procesar catálogos»:
-  hasta entonces no se muestran paneles con datos viejos.
+  contraseña en el momento.
+
+Re-importar **cualquier** catálogo obliga a rehacer el análisis, porque la
+información cruza datos entre ellos (comparación publicados vs procesados,
+atribución a SeisComp, repetidos, No publicados, mapas y perfiles). Por eso, al
+pulsar «Re-exportar» aparece un popup que lo avisa; si se acepta, tras la bajada
+el análisis corre solo (`_accion_procesar`), sin preguntar de nuevo.
+
+El tilde **«Forzar actualización»** (sección «Re-exportar») habilita los botones
+aunque el catálogo figure al día, para poder rebajarlo a propósito (por ejemplo
+si se corrigió la fuente en el servidor). Sin el tilde, el botón solo se
+habilita si el catálogo falló, falta o cambió.
 
 ### Pestañas de la ventana de revisión
 
@@ -112,6 +120,106 @@ El CSV trae una fila por cruce y un mismo evento local puede tener más de un
 cruce, así que el listado agrupa por evento y muestra el mejor (menor Δt), que
 es lo mismo que hace el informe `informes/no_act_*_estricto.txt`.
 
+El panel de SeisComp es solo la lista de eventos, a todo el ancho. Al hacer clic
+en una fila, los parámetros del evento (y el botón «Estaciones») abren en una
+ventana aparte, que se reutiliza al cambiar de evento y **no bloquea** la lista:
+son ventanas de consulta, sin captura de entrada, así que se puede seguir
+navegando con ellas abiertas. Antes el detalle iba embebido al lado de la lista y
+abajo quedaba cortado, justo donde está ese botón; separarlo deja ver todo sin
+apretar ninguna mitad. Al abrir la pestaña, la ventana principal se agranda para
+que entren las columnas de la lista.
+
+### Estaciones del evento
+
+Al seleccionar un evento en el panel de SeisComp, el botón «Estaciones» abre una
+ventana con dos solapas: **Con arribos**, con las llegadas de la solución
+preferida agrupadas por estación (la que estaba embebida en el detalle), y **Sin
+arribos**, con las estaciones del inventario que quedaron dentro del radio y no
+tienen arrivals/picks asociados al **origen preferido**. Ambas se pueden
+descargar como planilla.
+
+La tabla de «Con arribos» muestra, por cada llegada, si el pick fue **manual o
+automático** (`pick.m_evaluation_mode`), con el autor, la agencia y el método.
+Los picks manuales se resaltan —fuerte si esa llegada entró a la solución
+(`Usada`), suave si quedó afuera—, y tanto el encabezado de la ventana como el
+de cada estación desglosan las usadas y las sin usar por modo (por ejemplo,
+`11 usadas (3 manuales, 8 automáticas)`). En un pick manual el autor es el
+analista y el método va vacío; en uno automático el autor es el daemon
+(`scautopic…`) y el método, el del autopicker (p. ej. `AIC`).
+
+Las de «Sin arribos» salen del inventario, no de las fases: una estación sin
+arribos no tiene fila de llegada, así que el `INNER JOIN` de las fases descarta
+justo lo que se busca. **No son estaciones que no grabaron.** La base de
+metadatos de SeisComp no sabe qué estaciones tienen formas de onda de cada evento
+—eso vive en el archivo de ondas—, así que la ayuda de la solapa y la columna
+`actividad_ventana` («Actividad inferida»: cuántos otros eventos tienen picks de
+esa estación dentro de ±24 h) son un indicador indirecto de operación, no una
+prueba.
+
+La cadena de inventario se valida entera por evento: red, estación, sensor
+location y stream tienen que estar vigentes en la hora del evento. Una estación
+sin `sensorlocation`/`stream` vigente no se lista y se cuenta aparte (el aviso
+`descartadas_sin_stream` de la marca y del final de la exportación). Las
+columnas `loc_ref`/`cha_ref` son el stream de **referencia** (no el único) y
+`streams_vigentes` dice cuántos había.
+
+Además se acota a los **bindings** de SeisComp (tabla `configstation`, módulos
+habilitados): solo las estaciones que el sistema tiene configurado procesar.
+Puede haber dataless cargado sin binding creado, y esas no se listan porque
+SeisComp no las trabaja (en esta base son 334 de 477). El binding es la config
+**actual** y no tiene épocas, así que en eventos históricos es una aproximación;
+si no se encuentran bindings, no se filtra y se avisa.
+
+El radio por defecto es de 300 km (`--radio-km`, se pregunta al exportar y se
+puede bajar para catálogos grandes) y la ventana de actividad, de 24 horas
+(`--actividad-h`); la distancia se calcula con haversine, porque no hay PostGIS.
+**El radio es exclusivo de SeisComp**: corta la lista de estaciones sin arribos
+de sus eventos y no tiene nada que ver con los catálogos de Seisan ni de
+eventquery. Las columnas van ordenadas por distancia, las de menos de 50 km
+quedan en negrita y las de actividad inferida, en verde. El reuso de una
+exportación exige que el radio coincida con el anotado en la marca: cambiarlo
+obliga a re-exportar.
+
+Como esa lista crece con los eventos y con el radio (en el histórico completo
+pasa de un gigabyte), antes de exportar la interfaz **estima el tamaño** en MB
+—con una muestra de eventos, en décimas de segundo— y, si supera los 200 MB
+(`AVISO_NO_PICADAS_MB`), pide confirmación. Si la base no responde, se exporta
+igual sin el aviso. El exportador imprime la misma estimación en el registro.
+
+El **encabezado de la ventana Estaciones** tiene un control de **radio** y tres
+acciones, siempre visibles. «Filtrar» recorta hacia abajo la lista exportada,
+sin tocar la base: sirve para mirar un radio más chico que el del corte.
+«Ampliar (consulta a la base)» recalcula, **para ese evento**, el inventario
+vigente a su hora y la actividad de las estaciones, y abre el resultado en una
+ventana aparte —con su propia descarga— para no pisar el corte exportado. «Todo
+(sin límite)» hace lo mismo pero sin tope de distancia: trae todas las
+estaciones del inventario con la cadena de épocas vigente a la hora del evento.
+Si la ampliación trae más de `UMBRAL_AVISO_AMPLIADO` (2000) filas, pide
+confirmación antes de mostrarla. La ampliación necesita conexión a la base; si no
+está, avisa y deja el corte exportado como estaba.
+
+La columna de actividad se llama **«Actividad ±24 h»** y, arriba de la tabla, hay
+una línea fija que aclara qué mide: otros eventos con picks de esa estación
+dentro de ±24 h del origen (24 h antes y 24 h después). Es un indicador
+indirecto, no una prueba de que la estación haya grabado.
+
+El archivo ya trae los campos `waveform_status`, `availability_source`,
+`cobertura_desde` y `cobertura_hasta` para cuando se integren SDS,
+scardac/DataAvailability o FDSN Availability. Hoy `waveform_status` vale
+`NO_CONSULTADO` y los otros van vacíos: no se afirma nada sobre las formas de
+onda.
+
+Esta ventana necesita el tercer archivo. Las exportaciones anteriores a este
+cambio no lo tienen: la solapa avisa que hay que re-exportar en vez de mostrar una
+tabla vacía, que se leería como «no había ninguna estación cerca».
+
+### Esquema de la base de SeisComp
+
+`docs/esquema_seiscomp.md` documenta las tablas de SeisComp que consulta el
+proyecto, sus relaciones (por `_parent_oid` y por id público a través de
+`publicobject`) y una descripción de cada una. Hay una versión en texto plano en
+`docs/esquema_seiscomp.txt`, sin el diagrama Mermaid.
+
 ### Tamaño de la ventana
 
 `ajuste.py` agranda la ventana cuando el contenido no entra, y **solo crece**:
@@ -135,11 +243,81 @@ Para un período suelto con el catálogo ya elegido:
 ./supervisor.sh <archivo_entrada.csv> <archivo_salida.dat>
 ```
 
+## Qué se genera y qué no
+
+El flujo escribe dos cosas de naturaleza distinta, y la diferencia importa porque
+determina qué se puede borrar sin romper la app.
+
+**Caché: se genera siempre y no se borra.** Son los resultados que la app relee al
+reabrir, gracias a una comparación de fechas contra su entrada. Borrarlos obliga a
+repetir el análisis:
+
+- `datos/salida_collect.csv` (collect local), `datos/new_2_<base>.csv`,
+  `datos/todos_eventquery.csv`, `datos/excluidos.csv`, `datos/seiscomp_parametros.csv`
+- `datos/atribucion_<fuente>.csv`, `datos/no_pub_desde_2_5_*estricto.csv`
+- `datos/eventos_<vista>.json`, `datos/conteo_perfiles_<vista>.json`
+- `informes/rep_*.txt`, `informes/rep_seisan_exclu.txt`,
+  `informes/no_act_*estricto.txt` (lo usa `app.py` para distinguir «el análisis
+  nunca corrió» de «corrió y no encontró cruces»), `informes/excluidos.txt`
+- `ploteo/percibidos.txt`, y en `trabajo/` el `newcollect.txt` final
+
+**Entregables: no se generan salvo que los pidas.** No los lee nadie y se
+reconstruyen desde la caché, así que la app ofrece descargarlos a mano:
+
+- Los listados con tabla de «No actualizados», «No publicados» y «Ver repetidos»,
+  y los paneles y mapas de `plotear.py`, tienen botón de descarga. Escriben en
+  `descargas/`, en CSV o en TXT separado por tabulaciones.
+- Los entregables automáticos del pipeline (`cabeceras.txt`, `revisar.txt`,
+  `constation0.txt`, `sinestructura.txt`, `no_pub_todos_*.txt`,
+  `no_pub_desde_2_5_*.txt`, `*amplio.csv`, `analistas/*.csv` y
+  `sospechosos_<vista>.csv`) se escriben en `descargas/` solo con:
+
+```
+RV_ENTREGABLES=1 ./supervisor.sh <archivo_entrada.csv> <archivo_salida.dat>
+```
+
+Sin ese flag los scripts siguen su curso y las escrituras caen a un descarte, sin
+cortarse a mitad.
+
+### Descargas
+
+Todo lo que se baja va a `descargas/` dentro de la carpeta del análisis, y se abre
+con «Abrir carpeta» en la barra lateral. El CSV usa `utf-8-sig` (el BOM que necesita
+Excel para no romper los acentos) y el TXT va sin BOM, porque el BOM se le cuelga a
+la primera columna y rompe `cut -f1` y `pandas.read_csv`:
+
+- **CSV** separado por comas.
+- **TXT** separado por tabulaciones, que pega directo en las planillas que se usan
+  para revisar y distribuir.
+
+El diálogo recuerda el formato de la descarga anterior. En «Ver repetidos» no hay
+diálogo: el informe viene alineado por espacios, no es una tabla, y guardarlo como
+CSV lo volvía ilegible, así que siempre se baja como `.txt` con el contenido tal
+cual.
+
+En las vistas con tabla, «Descargar» arma el archivo con el filtro y el orden que
+se ven en pantalla, y «Descargar todo» lo escribe entero. En el panel de análisis,
+«Descargar» pregunta el ámbito: el perfil de la fila seleccionada, todos los
+perfiles visibles o los eventos sin perfil, con la cantidad de cada uno. Si el
+filtro «Solo sospechosos» está prendido, solo entran los eventos sospechosos. En
+«Ver repetidos» la ventana muestra solo las primeras 2000 líneas para seguir siendo
+usable, pero la descarga baja el informe completo.
+
+Al escribir en las tablas se respeta lo que se está mostrando, incluido el guion
+de «sin dato»: un vacío en el archivo significa que el dato no está, y no que valga
+cero.
+
 ## Conexión remota
 
 - Servidor: `sysopr@10.54.217.9` (configurable en `traer_catalogos.py`).
 - Directorio de trabajo remoto: `tmp` (se crea si no existe).
+- El catálogo de eventquery se baja con el binario remoto `eventquery2` (la
+  versión nueva). La vieja (`eventquery`) traía soluciones duplicadas para un
+  mismo evento, por eso no se usa.
 - La contraseña se pide en la ventana y se entrega a `ssh`/`scp` con
   `SSH_ASKPASS` + `SSH_ASKPASS_REQUIRE=force`; no se pasa por la línea de
   comandos ni se necesita `sshpass`.
+- El `trabajo/select.inp` local se borra apenas se sube: el `select` remoto corre
+  con la copia que queda en `tmp/`, y cada corrida (incluida «Re-exportar»)
+  lo regenera desde `plantillas/select.inp`.
 

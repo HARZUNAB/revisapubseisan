@@ -371,46 +371,55 @@ def procesar_csv(archivo_csv, fuente, umbral=None, k_peso=None,
     with open(salida_json, 'w') as jsonfile:
         json.dump(eventos, jsonfile, indent=4)
 
-    # Lista de eventos que podrían estar mal localizados (sospechosos)
-    sospechosos_csv = rutas.p_datos('sospechosos_%s.csv' % vista)
-    with open(sospechosos_csv, 'w', newline='') as csvfile:
-        escritor = csv.writer(csvfile)
-        escritor.writerow(['id', 'fecha hora', 'latitud', 'longitud', 'prof',
-                           'perfil', 'perp_km', 'residuo_km', 'dist_asoc',
-                           'd_knn_km', 'vecinos_ventana', 'criterios',
-                           'posibles_analistas', 'analista_ambiguo',
-                           'calidad_cruce',
-                           'archivo_origen', 'n_fila_origen'])
-        for ev in eventos:
-            if ev.get('sospechoso'):
-                eva = sismicidad.evaluar(ev)
-                m = eva.get('metricas', {})
-                # Criterios disparados (para diagnóstico)
-                grupo_de = {}
-                for g, nombres in sismicidad.CRITERIOS_SOSPECHOSO.get(
-                        "grupos", {}).items():
-                    for n in nombres:
-                        grupo_de[n] = g
-                criterios = "; ".join(
-                    "%s:%s" % (g, ",".join(n for n, v in eva['pruebas'].items()
-                                           if v and grupo_de.get(n) == g))
-                    for g in eva.get('grupos', {})
-                    if eva['grupos'][g]['cumplido'])
-                escritor.writerow([ev.get('id'), ev.get('fecha hora'),
-                                   ev.get('latitud'), ev.get('longitud'),
-                                   ev.get('prof'), ev.get('perfil'),
-                                   ev.get('perp_km'), ev.get('residuo_km'),
-                                   ev.get('dist_asoc'),
-                                   m.get('d_knn_km'), m.get('vecinos_ventana'),
-                                    criterios,
-                                    _texto_posibles_analistas(ev),
-                                    'si' if ev.get('analista_ambiguo') else 'no',
-                                    _texto_calidad_cruce(ev),
-                                    ev.get('archivo_origen'),
-                                    ev.get('n_fila_origen')])
-                # Diagnóstico en consola: por qué se marcó cada sospechoso
-                #print("  [sospechoso] %s"
-                #      % sismicidad.explicar_sospechoso(ev))
+    # Lista de eventos que podrían estar mal localizados (sospechosos).
+    # Es un entregable: el JSON de eventos ya trae el campo 'sospechoso' y el
+    # panel lo filtra y lo descarga solo, así que este CSV no lo lee nadie. Sin
+    # RV_ENTREGABLES ni se escribe ni se arma, porque sismicidad.evaluar() hay que
+    # volver a correrlo evento por evento solo para este archivo. El marcado ya
+    # quedó hecho antes, más arriba, para el campo 'sospechoso' del JSON, que sí
+    # es caché.
+    if rutas.ENTREGABLES:
+        sospechosos_csv = 'sospechosos_%s.csv' % vista
+        with rutas.entregable(sospechosos_csv) as csvfile:
+            escritor = csv.writer(csvfile)
+            escritor.writerow(['id', 'fecha hora', 'latitud', 'longitud', 'prof',
+                               'perfil', 'perp_km', 'residuo_km', 'dist_asoc',
+                               'd_knn_km', 'vecinos_ventana', 'criterios',
+                               'posibles_analistas', 'analista_ambiguo',
+                               'calidad_cruce',
+                               'archivo_origen', 'n_fila_origen'])
+            for ev in eventos:
+                if ev.get('sospechoso'):
+                    eva = sismicidad.evaluar(ev)
+                    m = eva.get('metricas', {})
+                    # Criterios disparados (para diagnóstico)
+                    grupo_de = {}
+                    for g, nombres in sismicidad.CRITERIOS_SOSPECHOSO.get(
+                            "grupos", {}).items():
+                        for n in nombres:
+                            grupo_de[n] = g
+                    criterios = "; ".join(
+                        "%s:%s" % (g, ",".join(n for n, v in eva['pruebas'].items()
+                                               if v and grupo_de.get(n) == g))
+                        for g in eva.get('grupos', {})
+                        if eva['grupos'][g]['cumplido'])
+                    escritor.writerow([ev.get('id'), ev.get('fecha hora'),
+                                       ev.get('latitud'), ev.get('longitud'),
+                                       ev.get('prof'), ev.get('perfil'),
+                                       ev.get('perp_km'), ev.get('residuo_km'),
+                                       ev.get('dist_asoc'),
+                                       m.get('d_knn_km'), m.get('vecinos_ventana'),
+                                       criterios,
+                                       _texto_posibles_analistas(ev),
+                                       'si' if ev.get('analista_ambiguo') else 'no',
+                                       _texto_calidad_cruce(ev),
+                                       ev.get('archivo_origen'),
+                                       ev.get('n_fila_origen')])
+                    # Diagnóstico en consola: por qué se marcó cada sospechoso
+                    #print("  [sospechoso] %s"
+                    #      % sismicidad.explicar_sospechoso(ev))
+    else:
+        sospechosos_csv = '(no generado: use RV_ENTREGABLES=1)'
  
     total_eventos = len(eventos)
     with_perfil = sum(1 for ev in eventos if ev.get('perfil') is not None)

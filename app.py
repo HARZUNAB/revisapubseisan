@@ -58,11 +58,12 @@ from ttkbootstrap.scrolled import ScrolledText
 from ttkbootstrap.dialogs import Messagebox
 
 import ajuste
+import descargas
 
 import matplotlib
 matplotlib.use("TkAgg")  # las figuras de detalle comparten la raíz Tk de la app
 
-from tkinter import TclError, Toplevel
+from tkinter import BooleanVar, TclError, Toplevel
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PY = sys.executable
@@ -92,6 +93,32 @@ ARCHIVO_CATALOGO = {
     "seisan": "salida_collect.csv",
     "eventquery": "todos_eventquery.csv",
 }
+
+
+def _derivado_al_dia(destino, entradas, carpeta):
+    """
+    True si 'destino' es más nuevo que todos los archivos de 'entradas'.
+
+    Sirve para los archivos que son un derivado puro de otros (el concatenado
+    de los new_2_*.csv, por ejemplo): si la salida es posterior a todas las
+    entradas, no hay forma de que esté vieja y se puede saltear el trabajo.
+
+    Ante cualquier duda devuelve False. Preferir rehacer un archivo a mostrar
+    datos de la corrida anterior.
+    """
+    try:
+        if not os.path.isfile(destino):
+            return False
+        marca = os.path.getmtime(destino)
+    except OSError:
+        return False
+    for nombre in entradas:
+        try:
+            if os.path.getmtime(os.path.join(carpeta, nombre)) > marca:
+                return False
+        except OSError:
+            return False
+    return True
 
 # Una vista por panel de análisis. 'clave' es, a la vez, el nombre base en
 # disco (eventos_<clave>.json, conteo_perfiles_<clave>.json) y la clave de la
@@ -283,6 +310,9 @@ class App:
         # La compuerta general solo sabe de análisis hecho/no hecho, así que
         # para lo que depende de un archivo puntual hace falta esto.
         self.condiciones = []
+        # Con «Forzar actualización» los botones de re-exportar se habilitan
+        # aunque el catálogo figure al día, para poder rebajarlo y reprocesar.
+        self.forzar_actualizacion = BooleanVar(value=False)
         # Tamaño que se sabe que tiene la ventana. Tk contesta 200x200 a todo
         # antes de que esté mapeada (ver ajuste.py), así que el "solo crecer"
         # se apoya en este valor y no en preguntarle a la ventana.
@@ -384,7 +414,22 @@ class App:
                     lambda: self._ver_no_publicados("seiscomp"), gated=True)
 
         self._separador(barra)
+        self._encabezado(barra, "DESCARGAS")
+        # Abre la carpeta donde caen los archivos que uno se lleva. Sin 'gated'
+        # a propósito: no depende del análisis, la carpeta existe siempre y
+        # sirve incluso antes de correr.
+        self._boton(barra, "Abrir carpeta", self._abrir_descargas)
+
+        self._separador(barra)
         self._encabezado(barra, "RE-EXPORTAR")
+        # Con el tilde puesto, los botones de abajo se habilitan aunque el
+        # catálogo figure al día: re-importar fuerza el análisis (los datos
+        # cruzan entre catálogos).
+        self.chk_forzar = ttk.Checkbutton(
+            barra, text="Forzar actualización",
+            variable=self.forzar_actualizacion, command=self._actualizar_gate,
+            bootstyle="round-toggle")
+        self.chk_forzar.pack(fill=X, pady=(2, 4))
         # Cada fila: el botón del catálogo y, a la derecha, un chip con su
         # estado. Solo se habilita el botón del catálogo que falló, falta o
         # cambió; el chip explica el estado de los tres.
@@ -485,13 +530,14 @@ class App:
         self._construir_barra_pestanas(derecha)
         self.cuaderno.pack(side=LEFT, fill=BOTH, expand=YES)
 
-        # Se anula el layout de la pestaña nativa para que no se vea la tira que
-        # dibuja el cuaderno: las pestañas se eligen desde la barra de grupos de
-        # arriba. Medido: con las nueve pestañas la tira suma ~45 px de ancho y
-        # ~28 de alto, y el cuaderno queda pidiendo lo que ocupan sus páginas.
-        # Ojo: es un cambio de estilo GLOBAL al proceso, no del widget; acá no
-        # molesta porque solo hay un cuaderno.
-        self.raiz.style.layout("TNotebook.Tab", [])
+        # Se anula el layout de la pestaña nativa del cuaderno PRINCIPAL para que
+        # no se vea la tira que dibuja el cuaderno: las pestañas se eligen desde
+        # la barra de grupos de arriba. Se hace sobre un estilo propio
+        # ("Principal.TNotebook") y NO sobre "TNotebook.Tab": anular ese era un
+        # cambio GLOBAL al proceso y dejaba sin pestañas a otros cuadernos, como
+        # el de la ventana de Estaciones, que sí necesita mostrar las suyas.
+        self.raiz.style.layout("Principal.TNotebook.Tab", [])
+        self.cuaderno.configure(style="Principal.TNotebook")
 
         # --- Barra de progreso (inferior, persistente) ---
         barra_marco = ttk.Frame(self.raiz, padding=(12, 4, 12, 8))
@@ -781,6 +827,9 @@ class App:
             return "ok"
 
     def _puede_re_exportar(self, catalogo):
+        # Con «Forzar actualización» se habilita aunque el catálogo esté al día.
+        if self.forzar_actualizacion.get():
+            return True
         return self._estado_catalogo(catalogo) != "ok"
 
     def _motivo_re_exportar(self, catalogo):
@@ -818,12 +867,31 @@ class App:
                                        bootstyle=estilo)
 
     def _re_exportar(self, catalogo):
-        """Vuelve a obtener el catálogo que falta o cambió."""
+        """Re-importa un catálogo y, siempre, vuelve a correr el análisis.
+
+        Re-importar uno solo ya obliga a reprocesar, porque los datos cruzan
+        entre catálogos (comparación, atribución a SeisComp, repetidos, No
+        publicados, mapas y perfiles). Por eso el aviso previo lo dice y, al
+        terminar la descarga, el análisis corre solo.
+        """
         if self.ocupado:
             return
+        if not self._confirmar_reimportar(catalogo):
+            self._log("Re-exportación cancelada.")
+            return
         if catalogo == "SeisComp":
+            radio = self._pedir_radio(self._radio_seiscomp_actual())
+            if radio is None:
+                self._log("Re-exportación cancelada.")
+                return
+            inicio, fin = self._periodo()
+            if inicio and fin and not self._confirmar_tamano_seiscomp(
+                    radio, inicio, fin):
+                self._log("Re-exportación cancelada por el tamaño estimado.")
+                return
+
             def tarea():
-                self._tarea_re_exportar_seiscomp()
+                self._tarea_re_exportar_seiscomp(radio)
                 # Refresca el panel con la exportación recién escrita.
                 self._procesar_fuente("seiscomp")
         else:
@@ -837,26 +905,46 @@ class App:
         def al_terminar():
             self.catalogos_faltantes.discard(catalogo)
             self._actualizar_gate()
-            if catalogo in ("Seisan", "eventquery"):
-                # El análisis quedó obsoleto: hay que reprocesar.
-                self._ofrecer_procesar(catalogo)
-            else:
-                self._abrir_panel_si_puede("seiscomp")
+            # El popup previo ya avisó que se reprocesa: se hace sin preguntar
+            # de nuevo.
+            self._accion_procesar(confirmar=False)
 
         self._iniciar(tarea, on_fin=al_terminar, plan=None)
 
-    def _tarea_re_exportar_seiscomp(self):
+    def _confirmar_reimportar(self, catalogo):
+        """
+        Aviso previo a re-importar: al hacerlo se fuerza el análisis.
+
+        No es solo un cambio de archivo: lo que entrega la app cruza datos
+        entre catálogos, así que re-importar uno obliga a reprocesar todo.
+        """
+        texto = (
+            "Vas a re-importar el catálogo de %s.\n\n"
+            "La información que entrega la app cruza datos entre los catálogos "
+            "(comparación publicados vs procesados, atribución a SeisComp, "
+            "revisión de repetidos, No publicados, mapas y perfiles), así que "
+            "al re-importarlo se forzará el análisis y se reprocesarán los "
+            "catálogos actuales (Seisan, Eventquery y SeisComp).\n\n"
+            "Puede tardar unos minutos. ¿Continuar?" % catalogo)
+        return Messagebox.show_question(
+            texto, "Re-importar y reprocesar", parent=self.raiz,
+            buttons=["Forzar y reprocesar:primary",
+                     "Cancelar"]) == "Forzar y reprocesar"
+
+    def _tarea_re_exportar_seiscomp(self, radio):
         inicio, fin = self._periodo()
         if not (inicio and fin):
             self._log("No se pudo determinar el período a exportar.")
             return
-        self._log("***** Re-exportando SeisComp (%s - %s) *****"
-                  % (inicio, fin))
+        self._log("***** Re-exportando SeisComp (%s - %s, radio %.0f km) *****"
+                  % (inicio, fin, radio))
         if self._popen([_script("verifica_entorno.py")]):
             self._log("El entorno no está listo; no se exportó SeisComp.")
             return
         exportador = _script("exporta_ventana_seiscomp.py")
-        if self._popen([exportador, "--reusar", inicio, fin]):
+        # Sin --reusar: re-exportar es forzar, así que se reconsulta la base.
+        if self._popen([exportador, "--radio-km", "%g" % radio,
+                        inicio, fin]):
             self._log("La exportación de SeisComp falló (ver el registro).")
             return
         self._log("SeisComp re-exportado.")
@@ -921,22 +1009,102 @@ class App:
         self.raiz.wait_window(top)
         return resultado["valor"]
 
-    def _ofrecer_procesar(self, catalogo):
-        """Ofrece (imponiendo) reprocesar tras re-exportar un catálogo."""
-        texto = ("Se actualizó %s.\n\nHay que volver a procesar los catálogos "
-                 "para que el análisis y los paneles usen los datos nuevos. "
-                 "Hasta entonces, los resultados anteriores no se muestran.\n\n"
-                 "¿Procesar ahora?" % catalogo)
-        if Messagebox.show_question(texto, "Reprocesar catálogos",
-                                    parent=self.raiz,
-                                    buttons=["Procesar:primary",
-                                             "Más tarde"]) == "Procesar":
-            self._accion_procesar()
-        else:
-            self._log("Pendiente: pulse «Procesar catálogos» para aplicar %s."
-                      % catalogo)
-            self._actualizar_estado()
-            self._actualizar_gate()
+    def _pedir_radio(self, defecto):
+        """Diálogo para el radio (km) de estaciones sin arribos de SeisComp."""
+        top = Toplevel(self.raiz)
+        top.title("Radio de estaciones SeisComp")
+        top.transient(self.raiz)
+        top.grab_set()
+        marco = ttk.Frame(top, padding=12)
+        marco.pack(fill=BOTH, expand=YES)
+        ttk.Label(marco, text="Radio de búsqueda de estaciones sin arribos"
+                             " (km, solo SeisComp):").pack(anchor=W)
+        entrada = ttk.Entry(marco, width=12)
+        entrada.insert(0, "%g" % defecto)
+        entrada.pack(anchor=W, pady=(4, 10))
+        entrada.focus_set()
+        entrada.selection_range(0, END)
+        resultado = {"valor": None}
+
+        def aceptar(_evento=None):
+            try:
+                valor = float(entrada.get().strip().rstrip("kKmM"))
+            except ValueError:
+                return
+            if valor <= 0:
+                return
+            resultado["valor"] = valor
+            top.destroy()
+
+        def cancelar(_evento=None):
+            top.destroy()
+
+        botones = ttk.Frame(marco)
+        botones.pack(fill=X)
+        ttk.Button(botones, text="Aceptar", command=aceptar,
+                   bootstyle="primary").pack(side=RIGHT)
+        ttk.Button(botones, text="Cancelar", command=cancelar,
+                   bootstyle="secondary").pack(side=RIGHT, padx=(0, 6))
+        entrada.bind("<Return>", aceptar)
+        top.bind("<Escape>", cancelar)
+        self.raiz.wait_window(top)
+        return resultado["valor"]
+
+    def _radio_seiscomp_actual(self):
+        """El radio de la exportación vigente, o el valor por defecto.
+
+        Se lee de la marca de fin, que anota con qué radio se calculó la lista
+        de estaciones. Si no hay exportación o no se puede leer, cae al valor
+        por defecto del exportador.
+        """
+        try:
+            import exporta_ventana_seiscomp as ev
+            defecto = ev.RADIO_ESTACIONES_KM
+        except Exception:
+            ev = None
+            defecto = 300.0
+        inicio, fin = self._periodo()
+        if ev is not None and inicio and fin:
+            marca = os.path.join("datos", "seiscomp_%s_%s.csv.completo"
+                                 % (inicio, fin))
+            radio = ev._radio_de_la_marca(marca)
+            if radio is not None:
+                return radio
+        return defecto
+
+    def _confirmar_tamano_seiscomp(self, radio, inicio, fin):
+        """Pide confirmación si la exportación de SeisComp quedaría enorme.
+
+        El archivo de no picadas crece con los eventos y con el radio, y en el
+        histórico pasa de un gigabyte. Si la exportación se va a reutilizar (el
+        radio coincide con la marca) no hay nada que estimar. Ante cualquier
+        error se sigue sin preguntar: es un aviso, no un requisito.
+        """
+        try:
+            from datetime import datetime
+            import exporta_ventana_seiscomp as ev
+        except Exception:
+            return True
+        marca = os.path.join("datos", "seiscomp_%s_%s.csv.completo"
+                             % (inicio, fin))
+        radio_marca = ev._radio_de_la_marca(marca)
+        if radio_marca is not None and abs(radio_marca - round(radio)) < 0.5:
+            return True
+        try:
+            ini_dt = datetime.strptime(inicio, "%Y%m%d%H%M%S")
+            fin_dt = datetime.strptime(fin, "%Y%m%d%H%M%S")
+            bases = ev._bases_a_consultar(None)
+            _filas, mb = ev.estimar_no_picadas(bases, ini_dt, fin_dt, radio)
+        except Exception:
+            return True
+        if mb < ev.AVISO_NO_PICADAS_MB:
+            return True
+        texto = ("Con radio %.0f km esta ventana generaría alrededor de %.0f MB"
+                 " de estaciones sin arribos. El revisor lo escanea al abrir y"
+                 " puede tardar.\n\n¿Continuar?" % (radio, mb))
+        return Messagebox.show_question(
+            texto, "Exportación grande", parent=self.raiz,
+            buttons=["Continuar:primary", "Cancelar"]) == "Continuar"
 
     def _tooltip(self, widget, motivo):
         """
@@ -1301,7 +1469,7 @@ class App:
             pass
         self._log("***** Análisis terminado *****")
 
-    def _accion_procesar(self):
+    def _accion_procesar(self, confirmar=True):
         """
         Botón maestro «Procesar catálogos».
 
@@ -1310,6 +1478,9 @@ class App:
         pulsación deja toda la información disponible para consultar; las
         fuentes que ya estaban al día se omiten, así que volver a pulsarlo
         rehace solo lo vencido.
+
+        Con 'confirmar=False' no pregunta: lo usa la re-exportación, que ya
+        avisó en su popup previo que al re-importar se reprocesa.
         """
         if not self.archivo:
             self._log("No se especificó archivo de entrada.")
@@ -1319,7 +1490,7 @@ class App:
         # siempre, con la compuerta aprobando que se vuelva a pulsar. Si el
         # análisis quedó obsoleto (se re-exportó un catálogo), no se pregunta:
         # reprocesar es justamente lo que hay que hacer.
-        if self.analisis_hecho and not self._analisis_obsoleto():
+        if confirmar and self.analisis_hecho and not self._analisis_obsoleto():
             texto = ("Volver a procesar los catálogos va a regenerar los "
                      "datos de %s.\n\nLo que ya estaba procesado vuelve a "
                      "quedar para rehacer, porque su CSV de entrada "
@@ -1379,10 +1550,11 @@ class App:
         abrirse, para que no haya dos formas de llenarla y se puedan
         desincronizar.
         """
-        # El concatenado se rehace siempre: los new_2_*.csv pueden haber
-        # cambiado con este análisis y un todos_eventquery.csv viejo (o vacío
-        # de una corrida anterior) dejaría la pestaña con datos de menos.
-        self._concatenar_eventquery()
+        # El concatenado se rehace siempre que el análisis acaba de correr:
+        # «Procesar catálogos» regenera los new_2_*.csv, así que el derivado
+        # tiene que volver a armarse. forzar=True porque es el único punto
+        # donde se garantiza que lo demás ya está en disco.
+        self._concatenar_eventquery(forzar=True)
         for clave in ("seisan", "eventquery", "seiscomp"):
             self._construir_catalogo(clave, seleccionar=False)
 
@@ -1769,15 +1941,31 @@ class App:
         panel["mtime"] = mtime
         self._ajustar_ventana()
 
-    def _concatenar_eventquery(self):
+    def _concatenar_eventquery(self, forzar=False):
+        """
+        Arma datos/todos_eventquery.csv con todos los new_2_*.csv.
+
+        Es un derivado puro de esos archivos, así que se saltea si la salida es
+        más nueva que todas las entradas: no hay forma de que esté desactualizada
+        y el trabajo es una pasada completa sobre el archivo. Antes se rehacía
+        siempre y por eso reabrir la app costaba una concatización entera.
+
+        forzar=True lo usa «Procesar catálogos», que acaba de regenerar todo y
+        quiere dejar el concatenado rehecho aunque las fechas den por bien.
+        """
         carpeta = "datos"
         salida = os.path.join(carpeta, "todos_eventquery.csv")
-        self._log("Concatenando %s/new_2_*.csv -> %s" % (carpeta, salida))
         try:
             partes = sorted(n for n in os.listdir(carpeta)
                             if n.startswith("new_2_") and n.endswith(".csv"))
         except OSError:
             partes = []
+        if (not forzar and partes
+                and _derivado_al_dia(salida, partes, carpeta)):
+            self._log("Reutilizado %s (ya estaba al día con %d new_2_*.csv)."
+                      % (salida, len(partes)))
+            return
+        self._log("Concatenando %s/new_2_*.csv -> %s" % (carpeta, salida))
         primera = True
         with open(salida, "w") as destino:
             for nombre in partes:
@@ -1940,6 +2128,15 @@ class App:
             pass
 
     # --------------------------------------------------- ver repetidos
+    def _abrir_descargas(self):
+        """Abre la carpeta de descargas del directorio de trabajo."""
+        carpeta = descargas.carpeta_descargas(self.cwd)
+        if descargas.abrir_carpeta(carpeta):
+            self._log("Descargas: %s" % carpeta)
+        else:
+            self._log("No se pudo abrir el explorador de archivos; la carpeta "
+                      "de descargas es %s" % carpeta)
+
     def _ver_repetidos(self):
         top = ttk.Toplevel(title="Eventos repetidos", master=self.raiz)
         top.geometry("760x480")
@@ -2002,6 +2199,38 @@ class App:
             else:
                 contenido.text.insert(END, "(no generado)")
             contenido.text.configure(state=DISABLED)
+            # El botón se enciende con el informe elegido y se apaga cuando no
+            # hay archivo o no tiene nada adentro.
+            boton_descargar.configure(
+                state="normal" if totales.get(iid) else "disabled")
+
+        def al_descargar():
+            sel = arbol.selection()
+            if not sel:
+                return
+            iid = sel[0]
+            ruta = rutas[iid]
+            # Se baja el informe entero, no lo que entra en pantalla: la
+            # ventana muestra las primeras MAX_VISIBLES solo para que siga
+            # siendo usable, y un informe recortado no sirve para nada.
+            lineas = descargas.leer_lineas(ruta)
+            if not lineas:
+                return
+            nombre = os.path.splitext(os.path.basename(ruta))[0]
+            escrito = descargas.descargar_texto(top, lineas, nombre)
+            if escrito:
+                self._log("Descargado el informe de repetidos %s a %s"
+                          % (nombre, escrito))
+
+        marco_botones = ttk.Frame(marco)
+        marco_botones.pack(fill=X, pady=(8, 0))
+        boton_descargar = ttk.Button(marco_botones, text="Descargar informe",
+                                     command=al_descargar, state="disabled",
+                                     bootstyle="primary-outline")
+        boton_descargar.pack(side=RIGHT)
+        ttk.Label(marco_botones,
+                  text="Se descarga el informe completo del archivo "
+                       "seleccionado.").pack(side=LEFT)
 
         arbol.bind("<<TreeviewSelect>>", al_seleccionar)
         hijos = arbol.get_children()
@@ -2015,6 +2244,10 @@ class App:
 
         Complementa al panel/mapa: acá se ve el conjunto completo en una tabla,
         sin tener que ir evento por evento en el ploteo.
+
+        Se ordena con clic en el encabezado y se filtra por texto. La descarga
+        arma el archivo con el filtro y el orden puestos; «Descargar todo» lo
+        escribe entero, que es lo que se reparte cuando el listado va completo.
         """
         ruta = os.path.join(
             "datos", "no_pub_desde_2_5_%sestricto.csv"
@@ -2033,9 +2266,6 @@ class App:
                     filas = list(csv.DictReader(f))
             except OSError as e:
                 self._log("[error] no publicados %s: %s" % (fuente, e))
-        ttk.Label(marco, text="%s: %d evento%s."
-                  % (titulo, len(filas), "" if len(filas) == 1 else "s"),
-                  bootstyle="secondary").pack(anchor=W, pady=(0, 6))
 
         columnas = [("Fecha_Hora", "Fecha y hora", 150),
                     ("Latitud", "Latitud", 90),
@@ -2045,20 +2275,114 @@ class App:
                     ("Tipo_mag.", "Tipo mag.", 80),
                     ("Analista", "Analista", 120)]
         claves = [c for c, _, _ in columnas]
-        arbol = ttk.Treeview(marco, columns=claves, show="headings")
+        # Profundidad, magnitud y coordenadas se ordenan como número: por texto
+        # un 9.0 quedaría después de un 10.0, que es justo lo que uno no quiere
+        # al revisar un listado por magnitud.
+        ordenables = {"Latitud", "Longitud", "Prof.", "Mag."}
+        estado = {"orden": None, "desc": False, "elegidas": list(filas)}
+
+        marco_controles = ttk.Frame(marco)
+        marco_controles.pack(fill=X, pady=(0, 6))
+        ttk.Label(marco_controles, text="Filtrar:").pack(side=LEFT)
+        caja_filtro = ttk.Entry(marco_controles, width=24)
+        caja_filtro.pack(side=LEFT, padx=(4, 10))
+        etiqueta_estado = ttk.Label(marco_controles, text="",
+                                    bootstyle="secondary")
+        etiqueta_estado.pack(side=LEFT)
+
+        def _valores(fila):
+            return [str(fila.get(c, "") or "") for c in claves]
+
+        def _al_descargar(todas=False):
+            elegidas = filas if todas else estado["elegidas"]
+            if not elegidas:
+                return
+            escrito = descargas.descargar_tabla(
+                top, [t for _, t, _ in columnas],
+                [_valores(f) for f in elegidas],
+                "no publicados %s" % fuente, aviso=False)
+            if not escrito:
+                return
+            aviso = "%d evento%s descargados a %s" % (
+                len(elegidas), "" if len(elegidas) == 1 else "s",
+                os.path.basename(escrito))
+            etiqueta_estado.config(text=aviso)
+            self._log(aviso)
+
+        boton_descargar = ttk.Button(marco_controles, text="Descargar",
+                                     command=_al_descargar, state="disabled",
+                                     bootstyle="primary-outline")
+        boton_descargar.pack(side=RIGHT)
+        ttk.Button(marco_controles, text="Descargar todo",
+                   command=lambda: _al_descargar(todas=True),
+                   bootstyle="secondary-outline").pack(side=RIGHT,
+                                                        padx=(6, 0))
+
+        marco_tabla = ttk.Frame(marco)
+        marco_tabla.pack(fill=BOTH, expand=YES)
+        arbol = ttk.Treeview(marco_tabla, columns=claves, show="headings")
         for clave, tit, ancho in columnas:
-            arbol.heading(clave, text=tit)
+            arbol.heading(clave, text=tit,
+                          command=lambda c=clave: _al_ordenar(c))
             arbol.column(clave, width=ancho, minwidth=50, stretch=False)
-        barra_v = ttk.Scrollbar(marco, orient="vertical", command=arbol.yview)
+        barra_v = ttk.Scrollbar(marco_tabla, orient="vertical",
+                                command=arbol.yview)
         arbol.configure(yscrollcommand=barra_v.set)
-        barra_h = ttk.Scrollbar(marco, orient="horizontal", command=arbol.xview)
+        barra_h = ttk.Scrollbar(marco_tabla, orient="horizontal",
+                                command=arbol.xview)
         arbol.configure(xscrollcommand=barra_h.set)
         arbol.pack(side="left", fill="both", expand=True)
         barra_v.pack(side="right", fill="y")
         barra_h.pack(side="bottom", fill="x")
-        for i, fila in enumerate(filas):
-            arbol.insert("", "end", iid=str(i),
-                         values=[str(fila.get(c, "") or "") for c in claves])
+
+        def _clave_orden(fila, columna):
+            if columna in ordenables:
+                try:
+                    return (0, float(str(fila.get(columna, "")).strip()), "")
+                except (TypeError, ValueError):
+                    pass
+            return (1, 0.0, str(fila.get(columna, "")).strip().lower())
+
+        def _ordenar(evs, columna, desc=False):
+            if columna is None:
+                return list(evs)
+            con = [f for f in evs if str(f.get(columna, "")).strip() != ""]
+            sin = [f for f in evs if str(f.get(columna, "")).strip() == ""]
+            con.sort(key=lambda f: _clave_orden(f, columna), reverse=desc)
+            return con + sin
+
+        def _al_ordenar(columna):
+            if estado["orden"] == columna:
+                estado["desc"] = not estado["desc"]
+            else:
+                estado["orden"] = columna
+                estado["desc"] = False
+            _llenar()
+
+        def _llenar(_evento=None):
+            texto = caja_filtro.get().strip().lower()
+            if texto:
+                elegidas = [f for f in filas
+                            if texto in " ".join(
+                                str(v).lower() for v in f.values())]
+            else:
+                elegidas = list(filas)
+            elegidas = _ordenar(elegidas, estado["orden"], estado["desc"])
+            estado["elegidas"] = elegidas
+            for item in arbol.get_children():
+                arbol.delete(item)
+            for i, fila in enumerate(elegidas):
+                arbol.insert("", "end", iid=str(i), values=_valores(fila))
+            etiqueta_estado.config(
+                text="%d de %d eventos" % (len(elegidas), len(filas))
+                if len(elegidas) != len(filas)
+                else "%d evento%s" % (len(filas),
+                                      "" if len(filas) == 1 else "s"))
+            boton_descargar.configure(
+                state="normal" if elegidas else "disabled")
+
+        caja_filtro.bind("<KeyRelease>", _llenar)
+        _llenar()
         self._log("No publicados de %s: %d eventos." % (fuente, len(filas)))
 
     # ----------------------------------------------------------- SeisComp
@@ -2178,7 +2502,8 @@ class App:
             w.destroy()
         try:
             ok = rs.abrir_panel(self.seiscomp_frame, par["eventos"],
-                                par["fases"], log=self._log, cwd=self.cwd)
+                                par["fases"], par.get("no_picadas"),
+                                log=self._log, cwd=self.cwd)
         except Exception as e:
             self._log("[error] revisión de SeisComp: %s" % e)
             return
@@ -2188,8 +2513,10 @@ class App:
             return
         if seleccionar:
             self.cuaderno.select(self.seiscomp_frame)
-        # El árbol de llegadas suma 1450 px de columnas: sin esto la revisión
-        # se abre en una ventana de 980 y hay que arrastrar la barra horizontal.
+        # La lista de eventos de SeisComp pide ~1340 px de ancho, más que el
+        # tamaño inicial; sin esto las últimas columnas quedan fuera y hay que
+        # agrandar la ventana a mano. El detalle vive en su propia ventana, así
+        # que lo que se mide acá es solo la lista.
         self._ajustar_ventana()
         self._log("Revisión de SeisComp abierta (%s)."
                   % os.path.basename(par["eventos"]))

@@ -6,6 +6,10 @@ Capa de red (SSH/SCP) para obtener los catálogos de Seisan y eventquery desde
 el servidor remoto. No tiene interfaz gráfica: la ventana de solicitud la
 armá solicita_catalogos.py, y acá vive solo lo que habla con el servidor.
 
+El catálogo de eventquery se baja con el binario remoto **eventquery2**, la
+versión nueva. La vieja (`eventquery`) traía soluciones duplicadas para un mismo
+evento, por eso no se usa.
+
 Por qué está separado
 ---------------------
 La conexión se prueba y se depura sin levantar la ventana, y la lógica de red
@@ -61,7 +65,7 @@ OPCIONES_SSH = [
 
 
 def a_iso(marca14):
-    """AAAAMMDDHHMMSS -> AAAA-MM-DDTHH:MM:SS (lo que espera eventquery)."""
+    """AAAAMMDDHHMMSS -> AAAA-MM-DDTHH:MM:SS (lo que espera eventquery2)."""
     return datetime.strptime(marca14, FORMATO_14).strftime(FORMATO_ISO)
 
 
@@ -171,7 +175,7 @@ class Conexion:
         Corre `comando` en un shell de login del remoto.
 
         El shell de login es lo que carga el PATH donde viven Seisan y
-        eventquery: `ssh host comando` a secas no lee los archivos de perfil.
+        eventquery2: `ssh host comando` a secas no lee los archivos de perfil.
         """
         self._ssh("bash -lc %s" % shlex.quote(comando))
 
@@ -185,7 +189,7 @@ class Conexion:
         if codigo != 0 or not rutas:
             raise RuntimeError(
                 "No se encontró '%s' en el PATH de %s@%s. Revise que el shell "
-                "de login cargue el entorno (Seisan/eventquery)."
+                "de login cargue el entorno (Seisan/eventquery2)."
                 % (nombre, USUARIO_REMOTO, IP_REMOTA))
         return rutas[-1]
 
@@ -248,7 +252,19 @@ def traer_seisan(inicio14, fin14, conexion, cwd=".", log=None, progreso=None,
     _emitir(progreso, 0.25)
 
     conexion.ssh_login("mkdir -p %s" % shlex.quote(DIR_TMP))
-    conexion.subir(select_inp_local, _ruta_tmp(SELECT_INP))
+    try:
+        conexion.subir(select_inp_local, _ruta_tmp(SELECT_INP))
+    finally:
+        # El .inp local solo servía para subirlo: el select remoto corre con la
+        # copia que quedó en tmp/. No es caché de nada — con forzar=True (que es
+        # lo que usa «Re-exportar») se regenera siempre desde
+        # plantillas/select.inp, y sin forzar el catálogo ya está en disco y no
+        # se llega acá. Se borra en el finally para que tampoco quede si la
+        # corrida remota falla.
+        try:
+            os.remove(select_inp_local)
+        except OSError:
+            pass
     _emitir(progreso, 0.4)
 
     comando = "cd %s && %s %s && mv -f %s %s" % (
@@ -268,7 +284,9 @@ def traer_eventquery(inicio14, fin14, conexion, cwd=".", log=None,
                      progreso=None, forzar=False):
     """Baja el catálogo de eventquery para la ventana pedida (con reuso).
 
-    Con 'forzar' se rebaja aunque el archivo exista (re-exportar).
+    El binario remoto es eventquery2, la versión nueva: la vieja (eventquery)
+    traía soluciones duplicadas para un mismo evento. Con 'forzar' se rebaja
+    aunque el archivo exista (re-exportar).
     """
     log = log or (lambda _t: None)
     nombre_salida = "eventquery_%s_%s.csv" % (inicio14, fin14)
@@ -278,8 +296,8 @@ def traer_eventquery(inicio14, fin14, conexion, cwd=".", log=None,
         _emitir(progreso, 1.0)
         return destino
 
-    ruta_eventquery = conexion.resolver("eventquery")
-    log("[+] eventquery remoto: %s" % ruta_eventquery)
+    ruta_eventquery = conexion.resolver("eventquery2")
+    log("[+] eventquery2 remoto: %s" % ruta_eventquery)
     _emitir(progreso, 0.15)
 
     conexion.ssh_login("mkdir -p %s" % shlex.quote(DIR_TMP))
