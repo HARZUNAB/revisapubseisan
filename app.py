@@ -20,9 +20,11 @@ cada pestaña en su estado (con datos, pendiente de procesar o sin datos). Los
 paneles pendientes se generan en segundo plano al abrir su pestaña.
 
 La barra lateral se organiza en Procesar / Consultar / Re-exportar. «Consultar»
-reúne «Ver repetidos» y los listados de «No publicados». «Re-exportar» solo
-habilita el catálogo que falta o que cambió; si la extracción inicial no pudo
-con uno, la app lo avisa y deja re-obtenerlo ahí mismo.
+reúne «Repetidos» y los listados de «No publicados» y «No actualizados»; los
+dos últimos abren una ventana con una pestaña por fuente (SeisComp primero).
+«Re-exportar» solo habilita el catálogo que falta o que cambió; si la
+extracción inicial no pudo con uno, la app lo avisa y deja re-obtenerlo ahí
+mismo.
 
   - Revisar los datos de SeisComp: la exportación de la ventana la deja la
     solicitud de catálogos y la revisión se abre en su pestaña, junto con los
@@ -405,13 +407,14 @@ class App:
 
         self._separador(barra)
         self._encabezado(barra, "CONSULTAR")
-        # Ver repetidos y los listados de no publicados van juntos: son
-        # informes de texto/tabla, no los mapas de las pestañas.
-        self._boton(barra, "Ver repetidos", self._ver_repetidos, gated=True)
-        self._boton(barra, "No publicados de Seisan",
-                    lambda: self._ver_no_publicados("seisan"), gated=True)
-        self._boton(barra, "No publicados de SeisComp",
-                    lambda: self._ver_no_publicados("seiscomp"), gated=True)
+        # Repetidos, no publicados y no actualizados son listados de
+        # texto/tabla, no los mapas de las pestañas. Los dos últimos abren una
+        # ventana con una pestaña por fuente (SeisComp primero); acá va una
+        # sola opción por listado.
+        self._boton(barra, "Repetidos", self._ver_repetidos, gated=True)
+        self._boton(barra, "No publicados", self._ver_no_publicados, gated=True)
+        self._boton(barra, "No actualizados", self._ver_no_actualizados,
+                    gated=True)
 
         self._separador(barra)
         self._encabezado(barra, "DESCARGAS")
@@ -1878,7 +1881,7 @@ class App:
         self._ajustar_ventana()
         self._log("Panel abierto (%s)." % clave)
 
-    def _abrir_no_actualizados(self, fuente):
+    def _abrir_no_actualizados(self, fuente, contenedor=None):
         """
         Muestra el listado de eventos no actualizados de una fuente.
 
@@ -1889,11 +1892,15 @@ class App:
 
         Distingue los tres estados posibles, porque un mismo "no se puede
         mostrar" significa cosas distintas: que el análisis nunca corrió, que
-        corrió sin encontrar cruces, o que hay datos.
+        corrió sin encontrar cruces, o que hay datos. Si se pasa 'contenedor'
+        se llena ese marco (ventana de consulta); si no, la pestaña del
+        cuaderno principal, con su caché por mtime.
         """
         panel = self.noact.get(fuente)
-        if panel is None:
-            return
+        if contenedor is None:
+            if panel is None:
+                return
+            contenedor = panel["frame"]
         etiqueta = {"seisan": "Seisan", "seiscomp": "SeisComp"}[fuente]
         csv_noact = os.path.join("datos", "atribucion_%s.csv" % fuente)
         # El informe .txt se escribe siempre que corre la comparación (aunque
@@ -1903,43 +1910,83 @@ class App:
             % ("" if fuente == "seisan" else "seiscomp_"))
 
         if not os.path.isfile(csv_noact):
-            for w in list(panel["frame"].winfo_children()):
+            for w in list(contenedor.winfo_children()):
                 w.destroy()
-            panel["construido"] = False
+            if panel is not None:
+                panel["construido"] = False
             texto = ("Todavía no hay nada para mostrar.\n\nPulse "
                      "«Procesar catálogos» para generarlo."
                      if not os.path.isfile(informe) else
                      "La comparación se ejecutó, pero no encontró ningún "
                      "cruce entre %s y lo publicado.\n\nNo hay eventos "
                      "no actualizados." % etiqueta)
-            ttk.Label(panel["frame"], justify=CENTER, text=texto).pack(
+            ttk.Label(contenedor, justify=CENTER, text=texto).pack(
                 expand=YES)
             return
 
         mtime = os.path.getmtime(csv_noact)
-        if (panel["construido"] and panel.get("mtime") == mtime
-                and panel["frame"].winfo_children()):
+        if (panel is not None and panel["construido"]
+                and panel.get("mtime") == mtime
+                and contenedor.winfo_children()):
             return
-        for w in list(panel["frame"].winfo_children()):
+        for w in list(contenedor.winfo_children()):
             w.destroy()
-        panel["construido"] = False
+        if panel is not None:
+            panel["construido"] = False
         rs = self._importar_revisor()
         if rs is None:
             return
         try:
-            ok = rs.abrir_no_actualizados(panel["frame"], fuente,
+            ok = rs.abrir_no_actualizados(contenedor, fuente,
                                           log=self._log, cwd=self.cwd)
         except Exception as e:
             ok = False
             self._log("[error] no actualizados %s: %s" % (fuente, e))
         if not ok:
-            ttk.Label(panel["frame"], justify=CENTER,
+            ttk.Label(contenedor, justify=CENTER,
                       text="No se pudo leer el listado de %s." % etiqueta
                       ).pack(expand=YES)
             return
-        panel["construido"] = True
-        panel["mtime"] = mtime
+        if panel is not None:
+            panel["construido"] = True
+            panel["mtime"] = mtime
         self._ajustar_ventana()
+
+    def _ver_no_actualizados(self):
+        """
+        Ventana con el listado de no actualizados, una pestaña por fuente.
+
+        SeisComp va primero y por defecto; Seisan después. Cada pestaña se
+        arma recién al seleccionarla, reutilizando _abrir_no_actualizados
+        sobre el marco de esa pestaña.
+        """
+        top = ttk.Toplevel(title="No actualizados", master=self.raiz)
+        top.geometry("1000x560")
+        cuaderno = ttk.Notebook(top)
+        cuaderno.pack(fill=BOTH, expand=YES)
+        fuentes = (("seiscomp", "SeisComp"), ("seisan", "Seisan"))
+        marcos, construido = {}, {}
+        for clave, etiqueta in fuentes:
+            marco = ttk.Frame(cuaderno)
+            cuaderno.add(marco, text=etiqueta)
+            marcos[clave] = marco
+            construido[clave] = False
+
+        def _construir(clave):
+            if construido[clave]:
+                return
+            construido[clave] = True
+            self._abrir_no_actualizados(clave, contenedor=marcos[clave])
+
+        def _al_cambiar(_evento=None):
+            actual = cuaderno.select()
+            for clave, marco in marcos.items():
+                if str(marco) == actual:
+                    _construir(clave)
+                    break
+
+        cuaderno.bind("<<NotebookTabChanged>>", _al_cambiar)
+        _construir("seiscomp")
 
     def _concatenar_eventquery(self, forzar=False):
         """
@@ -2238,7 +2285,47 @@ class App:
             arbol.selection_set(hijos[0])
             al_seleccionar()
 
-    def _ver_no_publicados(self, fuente):
+    def _ver_no_publicados(self, fuente=None):
+        """
+        Ventana con el listado de no publicados, una pestaña por fuente.
+
+        SeisComp va primero y por defecto; Seisan después. Cada pestaña se
+        arma recién al seleccionarla, para no construir las dos de golpe (el
+        listado de Seisan se pide a demanda). Si se pasa 'fuente' se abre
+        directo en esa pestaña, para no romper al generador de capturas.
+        """
+        top = ttk.Toplevel(title="No publicados", master=self.raiz)
+        top.geometry("900x560")
+        cuaderno = ttk.Notebook(top)
+        cuaderno.pack(fill=BOTH, expand=YES)
+        fuentes = (("seiscomp", "SeisComp"), ("seisan", "Seisan"))
+        marcos, construido = {}, {}
+        for clave, etiqueta in fuentes:
+            marco = ttk.Frame(cuaderno)
+            cuaderno.add(marco, text=etiqueta)
+            marcos[clave] = marco
+            construido[clave] = False
+
+        def _construir(clave):
+            if construido[clave]:
+                return
+            construido[clave] = True
+            self._construir_tabla_no_publicados(marcos[clave], clave)
+
+        def _al_cambiar(_evento=None):
+            actual = cuaderno.select()
+            for clave, marco in marcos.items():
+                if str(marco) == actual:
+                    _construir(clave)
+                    break
+
+        cuaderno.bind("<<NotebookTabChanged>>", _al_cambiar)
+        inicial = fuente if fuente in marcos else "seiscomp"
+        if inicial != "seiscomp":
+            cuaderno.select(marcos[inicial])
+        _construir(inicial)
+
+    def _construir_tabla_no_publicados(self, contenedor, fuente):
         """
         Listado de los eventos no publicados (mag >= 2.5) de una fuente.
 
@@ -2252,11 +2339,7 @@ class App:
         ruta = os.path.join(
             "datos", "no_pub_desde_2_5_%sestricto.csv"
             % ("" if fuente == "seisan" else "seiscomp_"))
-        titulo = "No publicados de %s" % (
-            "Seisan" if fuente == "seisan" else "SeisComp")
-        top = ttk.Toplevel(title=titulo, master=self.raiz)
-        top.geometry("880x540")
-        marco = ttk.Frame(top, padding=10)
+        marco = ttk.Frame(contenedor, padding=10)
         marco.pack(fill=BOTH, expand=YES)
 
         filas = []
@@ -2331,7 +2414,7 @@ class App:
             if not elegidas:
                 return
             escrito = descargas.descargar_tabla(
-                top, [t for _, t, _ in columnas],
+                contenedor, [t for _, t, _ in columnas],
                 [_valores(f) for f in elegidas],
                 "no publicados %s" % fuente, aviso=False)
             if not escrito:
