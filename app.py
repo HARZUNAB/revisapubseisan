@@ -160,11 +160,11 @@ VISTAS_POR_CLAVE = {v["clave"]: v for v in VISTAS}
 #
 # Cada pestaña se identifica con un prefijo porque hay dos SeisComp distintos:
 # el panel de análisis (panel:seiscomp) y el catálogo crudo (cat:seiscomp). Con
-# la clave de la vista sola no se distinguían y el botón del grupo Panel
-# terminaba apuntando al catálogo.
+# la clave de la vista sola no se distinguían y el botón del grupo «Panel de
+# mapas y perfiles» terminaba apuntando al catálogo.
 GRUPOS_PESTANAS = [
     {"titulo": None, "pestanas": ["log"]},
-    {"titulo": "Panel",
+    {"titulo": "Panel de mapas y perfiles",
      "pestanas": ["panel:seisan", "panel:eventquery", "panel:seiscomp"]},
     {"titulo": "No publicados",
      "pestanas": ["panel:seisan_nopub", "panel:seiscomp_nopub"]},
@@ -1062,7 +1062,7 @@ class App:
             defecto = ev.RADIO_ESTACIONES_KM
         except Exception:
             ev = None
-            defecto = 300.0
+            defecto = 400.0
         inicio, fin = self._periodo()
         if ev is not None and inicio and fin:
             marca = os.path.join("datos", "seiscomp_%s_%s.csv.completo"
@@ -2293,6 +2293,39 @@ class App:
         def _valores(fila):
             return [str(fila.get(c, "") or "") for c in claves]
 
+        def _ver_mapa(_evento=None):
+            """Abre planta+perfil del evento elegido (ploteo de un evento suelto)."""
+            seleccion = arbol.selection()
+            if not seleccion:
+                return
+            try:
+                fila = estado["elegidas"][int(seleccion[0])]
+            except (ValueError, IndexError):
+                return
+
+            def _num(clave):
+                try:
+                    return float(str(fila.get(clave, "")).strip())
+                except (TypeError, ValueError):
+                    return None
+
+            if _num("Latitud") is None or _num("Longitud") is None:
+                etiqueta_estado.config(text="El evento no tiene coordenadas.")
+                return
+            evento = {
+                "fecha hora": fila.get("Fecha_Hora", ""),
+                "latitud": _num("Latitud"), "longitud": _num("Longitud"),
+                "prof": _num("Prof."), "magnitud": fila.get("Mag.", ""),
+                "tipo": fila.get("Tipo_mag.", ""),
+                "analista": fila.get("Analista", ""),
+            }
+            try:
+                import plotear
+                plotear.abrir_evento(evento, fuente)
+            except Exception as e:
+                self._log("[error] no se pudo plotear: %s" % e)
+                etiqueta_estado.config(text="No se pudo plotear el evento.")
+
         def _al_descargar(todas=False):
             elegidas = filas if todas else estado["elegidas"]
             if not elegidas:
@@ -2315,12 +2348,15 @@ class App:
         boton_descargar.pack(side=RIGHT)
         ttk.Button(marco_controles, text="Descargar todo",
                    command=lambda: _al_descargar(todas=True),
-                   bootstyle="secondary-outline").pack(side=RIGHT,
-                                                        padx=(6, 0))
+                   bootstyle="primary-outline").pack(side=RIGHT, padx=(6, 0))
+        # Aviso corto: el detalle se abre con doble clic, no hay botón.
+        ttk.Label(marco_controles, text="Doble clic plotea",
+                  bootstyle="secondary").pack(side=RIGHT, padx=(10, 0))
 
         marco_tabla = ttk.Frame(marco)
         marco_tabla.pack(fill=BOTH, expand=YES)
-        arbol = ttk.Treeview(marco_tabla, columns=claves, show="headings")
+        arbol = ttk.Treeview(marco_tabla, columns=claves, show="headings",
+                             selectmode="browse")
         for clave, tit, ancho in columnas:
             arbol.heading(clave, text=tit,
                           command=lambda c=clave: _al_ordenar(c))
@@ -2334,6 +2370,10 @@ class App:
         arbol.pack(side="left", fill="both", expand=True)
         barra_v.pack(side="right", fill="y")
         barra_h.pack(side="bottom", fill="x")
+
+        # Doble clic (o Enter con la fila elegida) abre planta+perfil del evento.
+        arbol.bind("<Double-1>", _ver_mapa)
+        arbol.bind("<Return>", _ver_mapa)
 
         def _clave_orden(fila, columna):
             if columna in ordenables:

@@ -182,15 +182,19 @@ class App:
 
         campos = ttk.Frame(marco)
         campos.pack(fill=X)
-        ttk.Label(campos, text="Inicio (AAAAMMDDHHMMSS)",
-                  width=26).grid(row=0, column=0, sticky=W)
-        ttk.Label(campos, text="Fin (AAAAMMDDHHMMSS)",
-                  width=26).grid(row=1, column=0, sticky=W)
+        # Sin 'width': el ancho fijo de 26 cortaba la etiqueta más larga
+        # ("Radio de estaciones SeisComp (km)", 31 caracteres) y el '(km)' se
+        # veía tapado por la celda. Así cada etiqueta toma su ancho y las
+        # entradas siguen alineadas en la columna 1.
+        ttk.Label(campos, text="Inicio (AAAAMMDDHHMMSS)"
+                  ).grid(row=0, column=0, sticky=W)
+        ttk.Label(campos, text="Fin (AAAAMMDDHHMMSS)"
+                  ).grid(row=1, column=0, sticky=W)
         ttk.Label(campos, text="Contraseña %s@%s"
-                  % (tc.USUARIO_REMOTO, tc.IP_REMOTA),
-                  width=26).grid(row=2, column=0, sticky=W)
-        ttk.Label(campos, text="Radio de estaciones SeisComp (km)",
-                  width=26).grid(row=3, column=0, sticky=W)
+                  % (tc.USUARIO_REMOTO, tc.IP_REMOTA)
+                  ).grid(row=2, column=0, sticky=W)
+        ttk.Label(campos, text="Radio de estaciones SeisComp (km)"
+                  ).grid(row=3, column=0, sticky=W)
         self.ent_ini = ttk.Entry(campos, width=22)
         self.ent_ini.grid(row=0, column=1, sticky=W, pady=2)
         self.ent_fin = ttk.Entry(campos, width=22)
@@ -478,7 +482,7 @@ class App:
             radio = float((self.ent_radio.get() or "").strip().rstrip("kKmM"))
         except ValueError:
             self.aviso.configure(
-                text="El radio debe ser un número de kilómetros (p. ej. 300).")
+                text="El radio debe ser un número de kilómetros (p. ej. 400).")
             return False
         if radio <= 0:
             self.aviso.configure(text="El radio debe ser mayor que cero.")

@@ -50,6 +50,7 @@ import os
 import sys
 from datetime import datetime
 
+import ajuste
 import comparacion
 import descargas
 import rutas
@@ -175,9 +176,53 @@ COLUMNAS_NO_PICADA = [
 # Distancia a la que una estación sin arribos se considera "cerca" y se resalta.
 # Es un segundo umbral, más chico que el radio con el que se exportó, y no
 # pisa ese radio: el archivo trae todo lo que entró en el radio y esto solo
-# decide qué se ve de entrada. Con el radio en 300 km y esto en 50, la lista
+# decide qué se ve de entrada. Con el radio en 400 km y esto en 50, la lista
 # completa queda a un clic y los casos que más importan quedan arriba.
 UMBRAL_CERCANO_KM = 50.0
+
+# Ancho por defecto de la ventana "Estaciones del evento". No se pide el ancho
+# total de las columnas de llegadas (≈2040 px): eso da una ventana que no entra
+# en un monitor y hay que estirarla. Con 1400 entra la solapa «Sin arribos» sin
+# barra horizontal y la de llegadas se desplaza con la suya. El alto se calcula
+# aparte, según la pantalla.
+ANCHO_ESTACIONES = 1400
+
+# Columnas del «Análisis rápido»: un resumen por evento con estaciones sin
+# arribos cercanas (dentro del umbral), más los datos clave del evento y el
+# operador. (clave, título, ancho).
+COLUMNAS_ANALISIS = [
+    ("fecha", "Fecha", 90),
+    ("hora", "Hora", 80),
+    ("id_evento", "Id evento", 190),
+    ("magnitud", "Mag", 55),
+    ("tipo_magnitud", "Tipo", 55),
+    ("profundidad_km", "Prof (km)", 80),
+    ("region", "Región", 220),
+    ("operador", "Operador", 100),
+    ("fases", "Fases", 55),
+    ("destacadas", "Destacadas", 90),
+    ("cercanas", "Cercanas", 80),
+    ("dist_min", "Dist. mín. (km)", 110),
+]
+
+# Columnas de la descarga del análisis, en formato LARGO: una fila por evento y
+# estación cercana. (clave, título, ancho).
+COLUMNAS_ANALISIS_LARGO = [
+    ("fecha", "Fecha", 90),
+    ("hora", "Hora", 80),
+    ("id_evento", "Id evento", 190),
+    ("magnitud", "Mag", 55),
+    ("tipo_magnitud", "Tipo", 55),
+    ("profundidad_km", "Prof (km)", 80),
+    ("region", "Región", 220),
+    ("operador", "Operador", 100),
+    ("fases", "Fases", 55),
+    ("clasificacion", "Clasificación", 130),
+    ("distancia_km", "Dist (km)", 80),
+    ("actividad_ventana", "Actividad ±24 h", 120),
+    ("red", "Red", 60),
+    ("estacion", "Estación", 100),
+]
 
 # Si una ampliación trae más filas que esto, se pide confirmación antes de
 # mostrarla. La red local tiene ~486 estaciones (~446 con stream), así que
@@ -196,9 +241,30 @@ AYUDA_SIN_ARRIBOS = (
 # explícito posible a propósito: la ventana de ±24 h (24 h antes y 24 h después
 # del origen) es lo que más se presta a confusión.
 AYUDA_ACTIVIDAD = (
-    "Actividad inferida: cuenta otros eventos con picks de esa estación dentro"
-    " de ±24 h del origen, es decir 24 h antes y 24 h después. Es un indicador"
-    " indirecto; 0 no implica inactividad ni ausencia de formas de onda.")
+    "«Con actividad ±24 h»: la estación picó otros eventos entre 24 h antes y"
+    " 24 h después del origen (48 h en total). Es un indicador indirecto: 0 no"
+    " prueba que estuviera caída.")
+
+# Texto de la solapa «Contexto» del Análisis rápido. Explica en corto qué mide
+# y cómo se lee; va fijo, no como tooltip, porque es la razón de ser de la
+# ventana.
+AYUDA_ANALISIS = (
+    "Revisión rápida de todo el catálogo\n\n"
+    "Busca los eventos que tienen estaciones SIN ARRIBOS cercanas, es decir"
+    " estaciones dentro del umbral (por defecto, 50 km del epicentro) que no"
+    " fueron usadas en la solución del evento. Sirve para acotar la revisión:"
+    " solo hay que mirar los eventos que quedan en la lista.\n\n"
+    "Recorre TODO el catálogo, sin importar el filtro del panel.\n\n"
+    "Hay dos casos, y los dos importan:\n\n"
+    "• Cerca, CON actividad (±24 h): la estación estaba operando (picó otros"
+    " eventos) y está cerca, pero no se usó para localizar este evento. Es una"
+    " posible pérdida de calidad de la solución.\n\n"
+    "• Cerca, SIN actividad: no hay señal de que la estación estuviera"
+    " operando. Puede estar caída o sin datos.\n\n"
+    "Ojo: la actividad es un indicador indirecto (cuenta eventos picados 24 h"
+    " antes y 24 h después del origen). «Sin arribos» NO prueba que la estación"
+    " no haya grabado; para eso hay que mirar las formas de onda.\n\n"
+    "Doble clic en un evento de la lista abre sus parámetros y estaciones.")
 
 
 def _ayuda_emergente(widget, texto):
@@ -556,7 +622,7 @@ def _valores_no_picada(fila):
     return valores
 
 
-def _etiqueta_no_picada(fila):
+def _etiqueta_no_picada(fila, umbral_cercano=UMBRAL_CERCANO_KM):
     """
     La etiqueta de color de una estación sin arribos asociados.
 
@@ -566,6 +632,10 @@ def _etiqueta_no_picada(fila):
     grabara: una estación con actividad y cerca se ve distinto de una que solo
     está cerca.
 
+    'umbral_cercano' es la distancia (km) a partir de la cual se considera
+    "cerca"; se pasa desde la ventana para que sea configurable, con
+    UMBRAL_CERCANO_KM por defecto.
+
     No se agrega una quinta categoría para "sin actividad": en cero la estación
     puede estar caída, no interesarle el evento o simplemente nadie la revisó,
     y ese es el caso más común; no tiene por qué verse distinto del resto.
@@ -574,7 +644,7 @@ def _etiqueta_no_picada(fila):
     if actividad == float("inf"):
         actividad = 0.0
     distancia = _a_float(fila.get("distancia_km"))
-    cerca = distancia != float("inf") and distancia <= UMBRAL_CERCANO_KM
+    cerca = distancia != float("inf") and distancia <= umbral_cercano
     activa = actividad > 0
     if cerca and activa:
         return "destacada"
@@ -583,6 +653,190 @@ def _etiqueta_no_picada(fila):
     if cerca:
         return "cercana"
     return "normal"
+
+
+def analizar_sin_arribos(ruta_no_picadas, eventos,
+                         umbral_cercano=UMBRAL_CERCANO_KM):
+    """
+    Resume, por evento, las estaciones sin arribos que quedaron cerca.
+
+    Recorre el CSV de sin arribos UNA vez y se queda solo con las filas dentro
+    del umbral, que son las que importan para priorizar: no guarda el archivo
+    entero en memoria, solo las filas cercanas (que son pocas por evento).
+
+    Devuelve una lista de resúmenes, uno por evento con al menos una cercana,
+    ordenada por severidad: primero las de estación cercana CON actividad
+    (±24 h), que es el caso de una estación que operaba y no se usó; después
+    las cercanas sin actividad (posible caída); y a igualdad, por distancia.
+
+    Cada resumen es un dict:
+      {'evento', 'destacadas', 'cercanas', 'total', 'dist_min',
+       'estaciones': [(red, estacion, distancia, actividad, clasificacion), …]}
+    con 'estaciones' ordenada por distancia y clasificación 'destacada' o
+    'cercana'.
+    """
+    if not ruta_no_picadas or not os.path.isfile(ruta_no_picadas):
+        return []
+    por_id = {}
+    for fila in eventos:
+        clave = fila.get("id_evento")
+        if clave is not None:
+            por_id[clave] = fila
+    # Cuenta todas las filas del evento (para el total) y guarda aparte las
+    # cercanas, ya clasificadas.
+    totales = {}
+    cercanas = {}
+    with open(ruta_no_picadas, "r", encoding="utf-8", newline="") as archivo:
+        for fila in csv.DictReader(archivo):
+            id_evento = fila.get("id_evento", "")
+            totales[id_evento] = totales.get(id_evento, 0) + 1
+            etiqueta = _etiqueta_no_picada(fila, umbral_cercano)
+            if etiqueta in ("destacada", "cercana"):
+                cercanas.setdefault(id_evento, []).append((fila, etiqueta))
+
+    resumenes = []
+    for id_evento, filas in cercanas.items():
+        evento = por_id.get(id_evento)
+        if evento is None:
+            # Sin el evento no hay datos que mostrar (exportaciones cruzadas).
+            continue
+        destacadas = sum(1 for _, etiqueta in filas if etiqueta == "destacada")
+        estaciones = []
+        dist_min = float("inf")
+        for fila, etiqueta in filas:
+            distancia = _a_float(fila.get("distancia_km"))
+            actividad = _a_float(fila.get("actividad_ventana"))
+            if actividad == float("inf"):
+                actividad = 0.0
+            if distancia != float("inf") and distancia < dist_min:
+                dist_min = distancia
+            estaciones.append((_texto(fila.get("red")),
+                               _texto(fila.get("estacion")),
+                               distancia, actividad, etiqueta))
+        estaciones.sort(key=lambda e: e[2])
+        resumenes.append({
+            "evento": evento,
+            "destacadas": destacadas,
+            "cercanas": len(filas) - destacadas,
+            "total": totales.get(id_evento, len(filas)),
+            "dist_min": dist_min,
+            "estaciones": estaciones,
+        })
+    resumenes.sort(key=lambda r: (-r["destacadas"], -r["cercanas"],
+                                  r["dist_min"]))
+    return resumenes
+
+
+def _valores_analisis(resumen):
+    """Una fila de la tabla del Análisis rápido, en el orden de COLUMNAS_ANALISIS."""
+    evento = resumen["evento"]
+    fecha, hora = _partir_fecha_hora(_campo_tiempo(evento))
+    valores = {
+        "fecha": fecha,
+        "hora": hora,
+        "id_evento": _texto(evento.get("id_evento")),
+        "magnitud": _numero(evento.get("magnitud"), 1),
+        "tipo_magnitud": _texto(evento.get("tipo_magnitud")),
+        "profundidad_km": _numero(evento.get("profundidad_km"), 1),
+        "region": _texto(evento.get("region")),
+        "operador": _texto(evento.get("operador")),
+        "fases": _texto(evento.get("fases")),
+        "destacadas": str(resumen["destacadas"]),
+        "cercanas": str(resumen["cercanas"]),
+        "dist_min": _numero(resumen["dist_min"], 1),
+    }
+    return [valores.get(clave, "") for clave, _, _ in COLUMNAS_ANALISIS]
+
+
+def filas_analisis_largo(resumenes):
+    """Aplana los resúmenes a una fila por evento y estación cercana."""
+    filas = []
+    for resumen in resumenes:
+        evento = resumen["evento"]
+        fecha, hora = _partir_fecha_hora(_campo_tiempo(evento))
+        base = {
+            "fecha": fecha,
+            "hora": hora,
+            "id_evento": _texto(evento.get("id_evento")),
+            "magnitud": _numero(evento.get("magnitud"), 1),
+            "tipo_magnitud": _texto(evento.get("tipo_magnitud")),
+            "profundidad_km": _numero(evento.get("profundidad_km"), 1),
+            "region": _texto(evento.get("region")),
+            "operador": _texto(evento.get("operador")),
+            "fases": _texto(evento.get("fases")),
+        }
+        for red, estacion, distancia, actividad, etiqueta in resumen["estaciones"]:
+            fila = dict(base)
+            fila["clasificacion"] = ("cerca con actividad"
+                                     if etiqueta == "destacada"
+                                     else "cerca sin actividad")
+            fila["distancia_km"] = _numero(distancia, 1)
+            fila["actividad_ventana"] = _numero(actividad, 0)
+            fila["red"] = red
+            fila["estacion"] = estacion
+            filas.append(fila)
+    return filas
+
+
+def _valores_analisis_largo(fila):
+    """Una fila de la descarga larga, en el orden de COLUMNAS_ANALISIS_LARGO."""
+    return [fila.get(clave, "") for clave, _, _ in COLUMNAS_ANALISIS_LARGO]
+
+
+# Columnas del Análisis rápido que ordenan por número y no por el texto que se
+# muestra (mismo motivo que COLUMNA_NUMERICA en el panel).
+COLUMNAS_ANALISIS_NUMERICAS = (
+    "magnitud", "profundidad_km", "fases", "destacadas", "cercanas", "dist_min",
+)
+
+
+def _campo_orden_analisis(resumen, columna):
+    """El valor de un resumen para ordenar por una columna, o None si no hay."""
+    evento = resumen["evento"]
+    if columna in ("fecha", "hora"):
+        valor = str(_campo_tiempo(evento)).strip()
+    elif columna in ("destacadas", "cercanas", "dist_min"):
+        valor = resumen.get(columna)
+    else:
+        valor = _texto(evento.get(columna))
+    if valor is None or valor == "" or valor == VACIO:
+        return None
+    return valor
+
+
+def _clave_orden_analisis(resumen, columna):
+    """
+    Clave para ordenar un resumen del Análisis rápido por una columna.
+
+    Las numéricas ordenan por número (no por el texto) y lo que no tiene dato
+    va al final en cualquier sentido, con la misma tupla (grupo, valor) que usa
+    _clave_orden en el panel.
+    """
+    valor = _campo_orden_analisis(resumen, columna)
+    if valor is None:
+        return (1, 0.0) if columna in COLUMNAS_ANALISIS_NUMERICAS else (1, "")
+    if columna in COLUMNAS_ANALISIS_NUMERICAS:
+        return (0, _a_float(valor))
+    return (0, str(valor).strip().lower())
+
+
+def _ordenar_analisis(resumenes, columna, descendente=False):
+    """
+    Ordena los resúmenes del Análisis rápido por una columna del árbol.
+
+    Con 'columna' None devuelve el orden por defecto (severidad) tal como sale
+    de analizar_sin_arribos. Lo que no tiene dato va al final, también en orden
+    inverso (ver _ordenar_eventos).
+    """
+    if columna is None:
+        return list(resumenes)
+    con_dato = [r for r in resumenes
+                if _campo_orden_analisis(r, columna) is not None]
+    sin_dato = [r for r in resumenes
+                if _campo_orden_analisis(r, columna) is None]
+    con_dato.sort(key=lambda r: _clave_orden_analisis(r, columna),
+                  reverse=descendente)
+    return con_dato + sin_dato
 
 
 def _resumen_fases(filas_fases):
@@ -727,6 +981,46 @@ def _valores_evento(fila):
         _texto(fila.get("estatus")),
         _texto(fila.get("base_datos")),
     ]
+
+
+def _analista_del_evento(evento):
+    """El analista (operador) del evento, o VACIO."""
+    return _texto(evento.get("operador"))
+
+
+def _parametros_evento_en_linea(evento, separador=" · "):
+    """
+    Una línea compacta con los datos clave del evento.
+
+    Es para el encabezado de la ventana Estaciones: uno se queda un rato ahí,
+    entre las dos solapas, y así no pierde de vista qué evento está mirando. Va
+    con el mismo formato que la ventana de parámetros (lat/lon con
+    DECIMALES_COORD, profundidad y magnitud con uno).
+
+    El analista NO va acá: se muestra aparte, en negrita, para que resalte.
+    """
+    fecha, hora = _partir_fecha_hora(_campo_tiempo(evento))
+    partes = []
+    if fecha != VACIO:
+        partes.append(("%s %s" % (fecha, hora)).strip())
+    magnitud = _numero(evento.get("magnitud"), 1)
+    if magnitud != VACIO:
+        partes.append(("M%s %s" % (magnitud,
+                                   _texto(evento.get("tipo_magnitud")))).strip())
+    profundidad = _numero(evento.get("profundidad_km"), 1)
+    if profundidad != VACIO:
+        partes.append("Prof %s km" % profundidad)
+    latitud = _numero(evento.get("latitud"), DECIMALES_COORD)
+    longitud = _numero(evento.get("longitud"), DECIMALES_COORD)
+    if latitud != VACIO or longitud != VACIO:
+        partes.append("%s, %s" % (latitud, longitud))
+    region = _texto(evento.get("region"))
+    if region != VACIO:
+        partes.append(region)
+    agencia = _texto(evento.get("agencia"))
+    if agencia != VACIO:
+        partes.append("Agencia %s" % agencia)
+    return separador.join(partes)
 
 
 def _tiene_dato(fila, columna):
@@ -1063,13 +1357,16 @@ def _construir_arbol_fases(ttk, marco, filas_fases, padre=None, cwd=None,
                      stretch=False)
     barra = _t.Scrollbar(marco_tabla, orient="vertical", command=arbol.yview)
     arbol.configure(yscrollcommand=barra.set)
-    arbol.pack(side="left", fill="both", expand=True)
+    # Las barras van ANTES del árbol: si se empaqueta el árbol primero con
+    # expand=True, se queda con todo el marco y las barras quedan en 1x1 px,
+    # invisibles (y sin forma de llegar a las columnas de más a la derecha).
     barra.pack(side="right", fill="y")
     # La tabla de llegadas tiene 15 columnas y es más ancha que el detalle, así
     # que también necesita poder desplazarse de lado.
     barra_h = _t.Scrollbar(marco_tabla, orient="horizontal", command=arbol.xview)
     arbol.configure(xscrollcommand=barra_h.set)
     barra_h.pack(side="bottom", fill="x")
+    arbol.pack(side="left", fill="both", expand=True)
 
     # Resaltado de los picks manuales: el que entró a la solución va fuerte,
     # el que quedó afuera va suave. Los colores salen del tema para que no
@@ -1132,7 +1429,7 @@ def _construir_arbol_fases(ttk, marco, filas_fases, padre=None, cwd=None,
 
 
 def _tabla_sin_arribos(ttk, marco, filas, padre=None, cwd=None, etiqueta=None,
-                       log=None):
+                       log=None, umbral_cercano=UMBRAL_CERCANO_KM):
     """
     Dibuja la tabla de estaciones sin arribos (y su descarga) para una lista.
 
@@ -1170,15 +1467,17 @@ def _tabla_sin_arribos(ttk, marco, filas, padre=None, cwd=None, etiqueta=None,
                                                   pady=(4, 2))
     leyenda = _t.Frame(marco)
     leyenda.pack(anchor="w", padx=8, pady=(0, 4))
-    _t.Label(leyenda, text="Colores:", bootstyle="secondary").pack(side="left")
-    _t.Label(leyenda, text=" Activa y ≤ %g km " % UMBRAL_CERCANO_KM,
+    _t.Label(leyenda, text="Colores (Cerca = ≤ %g km):" % umbral_cercano,
+             bootstyle="secondary").pack(side="left")
+    _t.Label(leyenda, text=" Cerca, con actividad → no se usó ",
              background=fondo, foreground=texto_color,
              font=("", 9, "bold")).pack(side="left", padx=(6, 4))
-    _t.Label(leyenda, text=" Activa (picks ±24 h) ", foreground=color_activa,
-             font=("", 9)).pack(side="left", padx=4)
-    _t.Label(leyenda, text=" ≤ %g km " % UMBRAL_CERCANO_KM,
+    _t.Label(leyenda, text=" Con actividad, más lejos ",
+             foreground=color_activa, font=("", 9)).pack(side="left", padx=4)
+    _t.Label(leyenda, text=" Cerca, sin actividad → ¿caída? ",
              font=("", 9, "bold")).pack(side="left", padx=4)
-    _t.Label(leyenda, text=" Resto ", font=("", 9)).pack(side="left", padx=4)
+    _t.Label(leyenda, text=" Lejos, sin actividad ",
+             font=("", 9)).pack(side="left", padx=4)
 
     claves = [c for c, _, _ in COLUMNAS_NO_PICADA]
     titulos = [titulo for _, titulo, _ in COLUMNAS_NO_PICADA]
@@ -1193,12 +1492,14 @@ def _tabla_sin_arribos(ttk, marco, filas, padre=None, cwd=None, etiqueta=None,
         arbol.column(clave, width=anchos[indice], minwidth=60, stretch=False)
     barra = _t.Scrollbar(marco_tabla, orient="vertical", command=arbol.yview)
     arbol.configure(yscrollcommand=barra.set)
-    arbol.pack(side="left", fill="both", expand=True)
+    # Barras antes que el árbol: si no, el árbol con expand=True las deja en
+    # 1x1 px y no se puede desplazar la tabla (ver _construir_arbol_fases).
     barra.pack(side="right", fill="y")
     barra_h = _t.Scrollbar(marco_tabla, orient="horizontal",
                            command=arbol.xview)
     arbol.configure(xscrollcommand=barra_h.set)
     barra_h.pack(side="bottom", fill="x")
+    arbol.pack(side="left", fill="both", expand=True)
     _ayuda_emergente(arbol, AYUDA_ACTIVIDAD)
 
     # Los colores ya se calcularon arriba (leyenda); acá se aplican los tags.
@@ -1207,11 +1508,17 @@ def _tabla_sin_arribos(ttk, marco, filas, padre=None, cwd=None, etiqueta=None,
     arbol.tag_configure("activa", foreground=color_activa)
     arbol.tag_configure("cercana", font=("", 9, "bold"))
 
-    for fila in sorted(filas,
+    ordenadas = sorted(filas,
                        key=lambda f: (_a_float(f.get("distancia_km")),
-                                      f.get("red", ""), f.get("estacion", ""))):
+                                      f.get("red", ""), f.get("estacion", "")))
+    # Se guardan en el árbol para poder RETINTAR sin reconstruir (ver
+    # _retintar_no_picadas): el retinte en vivo del umbral «cerca» no debe
+    # perder el scroll ni la selección.
+    arbol._filas_no_picadas = ordenadas
+    arbol._umbral_cercano = umbral_cercano
+    for fila in ordenadas:
         arbol.insert("", "end", values=_valores_no_picada(fila),
-                     tags=(_etiqueta_no_picada(fila),))
+                     tags=(_etiqueta_no_picada(fila, umbral_cercano),))
 
     etiqueta_estado = None
     if padre is not None and cwd is not None:
@@ -1231,7 +1538,8 @@ def _tabla_sin_arribos(ttk, marco, filas, padre=None, cwd=None, etiqueta=None,
         marco_botones = _t.Frame(marco)
         marco_botones.pack(anchor="w", padx=4, pady=(4, 0))
         activas = sum(1 for f in filas
-                      if _etiqueta_no_picada(f) in ("activa", "destacada"))
+                      if _etiqueta_no_picada(f, umbral_cercano)
+                      in ("activa", "destacada"))
         etiqueta_estado = _t.Label(
             marco_botones,
             text="%d estaciones, %d con actividad inferida."
@@ -1241,6 +1549,23 @@ def _tabla_sin_arribos(ttk, marco, filas, padre=None, cwd=None, etiqueta=None,
                   bootstyle="secondary-outline",
                   command=_al_descargar_no_picadas).pack(side="right")
     return arbol, etiqueta_estado
+
+
+def _retintar_no_picadas(arbol, umbral_cercano):
+    """
+    Recolorea las filas ya dibujadas sin reconstruir la tabla.
+
+    Es lo que permite que el umbral «cerca» se aplique en vivo mientras se
+    escribe: cambia los tags de las filas existentes, pero no rehace el árbol,
+    así no se pierde el scroll ni la selección. El corte por distancia no usa
+    esto: ese sí reconstruye (ver _ventana_estaciones).
+    """
+    ordenadas = getattr(arbol, "_filas_no_picadas", None)
+    if ordenadas is None:
+        return
+    arbol._umbral_cercano = umbral_cercano
+    for item, fila in zip(arbol.get_children(), ordenadas):
+        arbol.item(item, tags=(_etiqueta_no_picada(fila, umbral_cercano),))
 
 
 def _radio_exportado(filas):
@@ -1254,15 +1579,16 @@ def _radio_exportado(filas):
 
 def _construir_arbol_no_picadas(ttk, marco, filas_no_picadas, padre=None,
                                 cwd=None, etiqueta=None, log=None,
-                                hay_archivo=True):
+                                hay_archivo=True,
+                                umbral_cercano=UMBRAL_CERCANO_KM):
     """
     Arma el contenido de la solapa de estaciones sin arribos: ayuda y tabla.
 
-    Devuelve el contenedor donde quedó la tabla (o None si no hay tabla), para
-    que el encabezado de la ventana pueda repintarla al filtrar por radio. El
-    control de radio y el botón «Ampliar» NO van acá: viven en el encabezado de
-    la ventana, siempre visibles, porque esta solapa no es la que abre por
-    defecto.
+    Devuelve (contenedor, arbol) —o (None, None) si no hay archivo— para que el
+    encabezado de la ventana pueda repintar la tabla al recortar por radio y
+    retintarla en vivo al cambiar el umbral «cerca». El control de radio y el
+    botón «Ampliar» NO van acá: viven en el encabezado de la ventana, siempre
+    visibles, porque esta solapa no es la que abre por defecto.
 
     Con 'hay_archivo=False' no es que no haya estaciones: es que el CSV no está,
     que es lo que pasa con una exportación vieja. El texto lo dice, porque un
@@ -1279,7 +1605,7 @@ def _construir_arbol_no_picadas(ttk, marco, filas_no_picadas, padre=None,
                  " _no_picadas antes del .csv.",
                  bootstyle="secondary", justify="left").pack(anchor="w",
                                                              padx=8, pady=10)
-        return None
+        return None, None
 
     # Ayuda fija, siempre visible: el tooltip es cómodo pero no puede ser la
     # única forma de enterarse de que "sin arribos" no significa "no grabó".
@@ -1288,18 +1614,25 @@ def _construir_arbol_no_picadas(ttk, marco, filas_no_picadas, padre=None,
                                                   pady=(4, 0))
     contenedor = _t.Frame(marco)
     contenedor.pack(fill="both", expand=True)
-    _tabla_sin_arribos(_t, contenedor, filas_no_picadas, padre=padre, cwd=cwd,
-                       etiqueta=etiqueta, log=log)
-    return contenedor
+    arbol, _etiqueta = _tabla_sin_arribos(
+        _t, contenedor, filas_no_picadas, padre=padre, cwd=cwd,
+        etiqueta=etiqueta, log=log, umbral_cercano=umbral_cercano)
+    return contenedor, arbol
 
 
-def _centrar_en_pantalla(ventana, ancho, alto):
+def _centrar_en_pantalla(ventana, ancho, alto, sobre=None):
     """
-    Ubica la ventana centrada en la pantalla, acotada al área visible.
+    Ubica la ventana centrada, acotada al área visible.
 
     Tk deja un Toplevel nuevo donde quiera el gestor de ventanas, y en pantallas
     anchas eso puede terminar fuera del área visible: la ventana existe, captura
     o tapa, pero no se ve. Centrarla y recortarla a la pantalla evita el caso.
+
+    'sobre' es el widget padre: si se pasa, la ventana se centra sobre él en vez
+    de sobre la pantalla entera. Importa con varios monitores: Tk reporta el
+    escritorio virtual completo (p. ej. 3840 px con dos monitores de 1920), y
+    centrar ahí deja la ventana a caballo entre los dos. Centrar sobre el padre
+    la mantiene en el mismo monitor que la app.
     """
     try:
         pantalla_ancho = ventana.winfo_screenwidth()
@@ -1309,9 +1642,35 @@ def _centrar_en_pantalla(ventana, ancho, alto):
         return
     ancho = min(ancho, pantalla_ancho)
     alto = min(alto, pantalla_alto)
-    x = max(0, (pantalla_ancho - ancho) // 2)
-    y = max(0, (pantalla_alto - alto) // 2)
+    centro_x = pantalla_ancho // 2
+    centro_y = pantalla_alto // 2
+    if sobre is not None:
+        try:
+            sobre.update_idletasks()
+            centro_x = sobre.winfo_rootx() + sobre.winfo_width() // 2
+            centro_y = sobre.winfo_rooty() + sobre.winfo_height() // 2
+        except Exception:
+            pass
+    x = max(0, min(centro_x - ancho // 2, pantalla_ancho - ancho))
+    y = max(0, min(centro_y - alto // 2, pantalla_alto - alto))
     ventana.geometry("%dx%d+%d+%d" % (ancho, alto, x, y))
+
+
+def _acotar_al_techo(ventana, ancho, alto):
+    """
+    Baja (ancho, alto) al tope que admite la ventana.
+
+    Usa ajuste.techo, el mismo tope que el resto de la app: el menor entre el
+    de referencia (1920x1080) y lo que permite el gestor de ventanas. Sin esto,
+    en un escritorio de 3840 px una ventana de 2100 entra "en pantalla" pero no
+    en un monitor, y queda a caballo entre dos.
+    """
+    try:
+        techo_ancho, techo_alto = ajuste.techo(ventana)
+    except Exception:
+        return ancho, alto
+    return (min(ancho, max(320, techo_ancho - ajuste.MARGEN)),
+            min(alto, max(240, techo_alto - ajuste.MARGEN)))
 
 
 def _ventana_detalle(padre, evento, filas_fases, etiqueta_fuente=None,
@@ -1335,9 +1694,14 @@ def _ventana_detalle(padre, evento, filas_fases, etiqueta_fuente=None,
     import ttkbootstrap as _t
     if ventana_previa is not None and ventana_previa.winfo_exists():
         ventana = ventana_previa
+        nueva = False
     else:
         ventana = _t.Toplevel(padre)
-    descargas.encima_de(padre, ventana, modal=False)
+        # Se arma oculta y se muestra recién con la geometría final: si no, el
+        # gestor de ventanas la enseña un instante en su posición por defecto
+        # (arriba a la izquierda) y después salta al lugar y tamaño definitivos.
+        ventana.withdraw()
+        nueva = True
 
     ventana.title("Parámetros del evento %s"
                   % (_texto(evento.get("id_evento")) or ""))
@@ -1347,19 +1711,16 @@ def _ventana_detalle(padre, evento, filas_fases, etiqueta_fuente=None,
     _construir_detalle(_t, ventana, evento, filas_fases, etiqueta_fuente,
                        sin_fases=sin_fases, al_estaciones=al_estaciones)
 
-    # El tamaño lo pide el contenido; se recorta a la pantalla para que en un
-    # monitor chico no quede parte fuera de la vista.
+    # El tamaño lo pide el contenido, acotado al tope de la app para que en un
+    # monitor chico (o en un escritorio con varios) no quede parte fuera.
     ventana.update_idletasks()
     ancho = max(560, ventana.winfo_reqwidth())
     alto = ventana.winfo_reqheight()
-    try:
-        maximo = ventana.wm_maxsize()
-        if maximo and maximo[0] > 0:
-            ancho = min(ancho, maximo[0] - 40)
-            alto = min(alto, maximo[1] - 40)
-    except Exception:
-        pass
-    _centrar_en_pantalla(ventana, ancho, alto)
+    ancho, alto = _acotar_al_techo(ventana, ancho, alto)
+    _centrar_en_pantalla(ventana, ancho, alto, sobre=padre)
+    if nueva:
+        ventana.deiconify()
+    descargas.encima_de(padre, ventana, modal=False)
     return ventana
 
 
@@ -1402,35 +1763,75 @@ def _ventana_estaciones(padre, evento, filas_fases, filas_no_picadas, cwd,
 
     if ventana_previa is not None and ventana_previa.winfo_exists():
         ventana = ventana_previa
+        nueva = False
     else:
         ventana = _t.Toplevel(padre)
-    # Ventana de consulta, no diálogo: sin grab, para poder seguir navegando.
-    descargas.encima_de(padre, ventana, modal=False)
+        # Ver _ventana_detalle: oculta hasta tener la geometría final, para que
+        # no se vea el salto desde la esquina superior izquierda.
+        ventana.withdraw()
+        nueva = True
 
     ventana.title("Estaciones del evento %s"
                   % (_texto(evento.get("id_evento")) or ""))
     for hijo in ventana.winfo_children():
         hijo.destroy()
 
+    # Parámetros del evento y analista, siempre a la vista: entre las dos
+    # solapas uno se queda un rato, y así no pierde de vista qué evento es.
+    parametros = _t.Frame(ventana)
+    parametros.pack(fill="x", padx=6, pady=(6, 0))
+    analista = _analista_del_evento(evento)
+    if analista != VACIO:
+        _t.Label(parametros, text="Analista: %s" % analista,
+                 font=("", 10, "bold")).pack(side="right")
+    _t.Label(parametros, text=_parametros_evento_en_linea(evento),
+             bootstyle="secondary", justify="left",
+             wraplength=900).pack(side="left", fill="x", expand=True)
+
     arriba = _t.Frame(ventana)
-    arriba.pack(fill="x", padx=6, pady=(6, 0))
+    arriba.pack(fill="x", padx=6, pady=(2, 0))
     _t.Label(arriba, text="  |  ".join(partes),
              bootstyle="secondary").pack(side="left")
     if etiqueta_fuente:
         _t.Label(arriba, text=etiqueta_fuente,
                  bootstyle="secondary").pack(side="right")
 
-    # Control de radio y ampliación, en el ENCABEZADO y siempre visible: antes
-    # vivía dentro de la solapa "Sin arribos", que no es la que abre por defecto,
-    # así que no se encontraba.
+    # Distancias, en el ENCABEZADO y siempre visible: el radio recorta la lista
+    # exportada y el umbral «cerca» define el color. Antes vivían dentro de la
+    # solapa "Sin arribos", que no es la que abre por defecto.
     radio_exportado = _radio_exportado(filas_no_picadas)
-    control = _t.Frame(ventana)
-    control.pack(fill="x", padx=8, pady=(4, 0))
-    _t.Label(control, text="Radio SeisComp (km):").pack(side="left")
-    ent_radio = _t.Entry(control, width=8)
+    umbral_cercano = UMBRAL_CERCANO_KM
+    # Estado del corte: qué filas se muestran y con qué valores. Sirve para el
+    # mensaje de estado y para el retinte en vivo del umbral «cerca».
+    datos = {"mostradas": list(filas_no_picadas), "arbol": None,
+             "radio": radio_exportado, "solo": False}
+
+    distancias = _t.Frame(ventana)
+    distancias.pack(fill="x", padx=8, pady=(4, 0))
+    _t.Label(distancias, text="Radio a mostrar (km):").pack(side="left")
+    ent_radio = _t.Entry(distancias, width=8)
     if radio_exportado is not None:
         ent_radio.insert(0, "%g" % radio_exportado)
-    ent_radio.pack(side="left", padx=(4, 6))
+    ent_radio.pack(side="left", padx=(4, 8))
+    _ayuda_emergente(ent_radio, "Recorta la lista ya exportada; no consulta la"
+                     " base.")
+    _t.Label(distancias, text="Resaltar cerca ≤ (km):").pack(side="left")
+    ent_cerca = _t.Entry(distancias, width=6)
+    ent_cerca.insert(0, "%g" % umbral_cercano)
+    ent_cerca.pack(side="left", padx=(4, 8))
+    _ayuda_emergente(ent_cerca, "Umbral de resaltado «cerca»: solo cambia el"
+                     " color, no recorta la lista.")
+    var_solo = _t.BooleanVar(value=False)
+    # Sin bootstyle: así no depende de un layout de ttkbootstrap que puede no
+    # estar registrado (p. ej. en un segundo intérprete/raíz del test).
+    chk_solo = _t.Checkbutton(distancias, text="Solo cercanas",
+                              variable=var_solo)
+    chk_solo.pack(side="left", padx=(0, 8))
+    _ayuda_emergente(chk_solo, "Muestra solo las estaciones dentro del umbral"
+                     " «cerca».")
+    boton_aplicar = _t.Button(distancias, text="Aplicar",
+                              bootstyle="secondary-outline")
+    boton_aplicar.pack(side="left")
 
     if not hay_no_picadas:
         _t.Label(ventana, text="Aviso: esta exportación no trae el archivo de"
@@ -1447,11 +1848,17 @@ def _ventana_estaciones(padre, evento, filas_fases, filas_no_picadas, cwd,
 
     _construir_arbol_fases(_t, marco_picadas, filas_fases, padre=ventana,
                            cwd=cwd, etiqueta=etiqueta_fuente, log=log)
-    contenedor_no_picadas = _construir_arbol_no_picadas(
+    contenedor_no_picadas, arbol_no_picadas = _construir_arbol_no_picadas(
         _t, marco_no_picadas, filas_no_picadas, padre=ventana, cwd=cwd,
-        etiqueta=etiqueta_fuente, log=log, hay_archivo=hay_no_picadas)
+        etiqueta=etiqueta_fuente, log=log, hay_archivo=hay_no_picadas,
+        umbral_cercano=umbral_cercano)
+    datos["arbol"] = arbol_no_picadas
 
-    estado_control = _t.Label(control, text="", bootstyle="secondary")
+    # Barra de estado, debajo de los controles y a todo el ancho: dice cuántas
+    # se muestran y cuántas quedaron resaltadas como cerca.
+    estado_control = _t.Label(ventana, text="", bootstyle="secondary",
+                              justify="left", wraplength=1300)
+    estado_control.pack(anchor="w", padx=8, pady=(2, 0))
 
     def _leer_radio():
         try:
@@ -1460,18 +1867,96 @@ def _ventana_estaciones(padre, evento, filas_fases, filas_no_picadas, cwd,
             return None
         return valor if valor > 0 else None
 
-    def _aplicar():
+    def _leer_cerca():
+        try:
+            valor = float(ent_cerca.get().strip().rstrip("kKmM"))
+        except ValueError:
+            return None
+        return valor if valor > 0 else None
+
+    def _contar_cerca():
+        return sum(1 for f in datos["mostradas"]
+                   if _etiqueta_no_picada(f, umbral_cercano)
+                   in ("destacada", "cercana"))
+
+    def _actualizar_estado():
+        if not hay_no_picadas:
+            estado_control.config(text="")
+            return
+        total = len(filas_no_picadas)
+        mostradas = len(datos["mostradas"])
+        resaltadas = _contar_cerca()
+        if datos["solo"]:
+            texto = ("Mostrando %d de %d estaciones (solo ≤ %g km) · %d"
+                     " resaltadas como cerca."
+                     % (mostradas, total, umbral_cercano, resaltadas))
+        else:
+            radio = datos["radio"]
+            etiqueta_radio = ("%g km" % radio) if radio is not None else "sin tope"
+            texto = ("Mostrando %d de %d estaciones (≤ %s) · %d resaltadas como"
+                     " cerca (≤ %g km)."
+                     % (mostradas, total, etiqueta_radio, resaltadas,
+                        umbral_cercano))
+            actual = _leer_radio()
+            if actual is not None and radio is not None and actual != radio:
+                texto += "  (radio sin aplicar)"
+        estado_control.config(text=texto)
+
+    def _reconstruir():
+        # El corte depende del radio y, si «Solo cercanas» está marcado, del
+        # umbral cerca (el más chico de los dos).
+        limite = umbral_cercano if datos["solo"] else datos["radio"]
+        if limite is None:
+            filas = list(filas_no_picadas)
+        else:
+            filas = [f for f in filas_no_picadas
+                     if _a_float(f.get("distancia_km")) <= limite]
+        datos["mostradas"] = filas
+        if contenedor_no_picadas is not None:
+            arbol, _etiqueta = _tabla_sin_arribos(
+                _t, contenedor_no_picadas, filas, padre=ventana, cwd=cwd,
+                etiqueta=etiqueta_fuente, log=log,
+                umbral_cercano=umbral_cercano)
+            datos["arbol"] = arbol
+
+    def _aplicar(_evento=None):
+        nonlocal umbral_cercano
         radio = _leer_radio()
         if radio is None:
             estado_control.config(text="Radio inválido.")
             return
-        filas = [f for f in filas_no_picadas
-                 if _a_float(f.get("distancia_km")) <= radio]
-        if contenedor_no_picadas is not None:
-            _tabla_sin_arribos(_t, contenedor_no_picadas, filas, padre=ventana,
-                               cwd=cwd, etiqueta=etiqueta_fuente, log=log)
-        estado_control.config(text="%d de %d dentro de %g km."
-                              % (len(filas), len(filas_no_picadas), radio))
+        # Un "cerca" inválido o vacío conserva el valor anterior en vez de
+        # recortar la tabla con un umbral roto.
+        nuevo = _leer_cerca()
+        if nuevo is not None:
+            umbral_cercano = nuevo
+        datos["radio"] = radio
+        datos["solo"] = bool(var_solo.get())
+        _reconstruir()
+        _actualizar_estado()
+
+    def _retinte_inmediato(_evento=None):
+        nonlocal umbral_cercano
+        nuevo = _leer_cerca()
+        if nuevo is None:
+            return
+        umbral_cercano = nuevo
+        if datos["solo"]:
+            # Con «Solo cercanas» el corte depende del umbral: hay que rehacer.
+            _reconstruir()
+        elif datos["arbol"] is not None:
+            _retintar_no_picadas(datos["arbol"], umbral_cercano)
+        _actualizar_estado()
+
+    _retinte = {"after": None}
+
+    def _programar_retinte(_evento=None):
+        if _retinte["after"] is not None:
+            try:
+                ventana.after_cancel(_retinte["after"])
+            except Exception:
+                pass
+        _retinte["after"] = ventana.after(300, _retinte_inmediato)
 
     def _ampliar(todo=False):
         if al_ampliar is None:
@@ -1488,7 +1973,7 @@ def _ventana_estaciones(padre, evento, filas_fases, filas_no_picadas, cwd,
         boton_ampliar.configure(state="disabled")
         boton_todo.configure(state="disabled")
         try:
-            cantidad = al_ampliar(radio)
+            cantidad = al_ampliar(radio, umbral_cercano)
             if cantidad is None:
                 estado_control.config(text="Ampliación cancelada.")
             elif radio is None:
@@ -1503,46 +1988,46 @@ def _ventana_estaciones(padre, evento, filas_fases, filas_no_picadas, cwd,
             boton_ampliar.configure(state="normal")
             boton_todo.configure(state="normal")
 
-    _t.Button(control, text="Filtrar", bootstyle="secondary-outline",
-              command=_aplicar).pack(side="left")
-    boton_ampliar = _t.Button(control, text="Ampliar (consulta a la base)",
+    boton_aplicar.configure(command=_aplicar)
+    chk_solo.configure(command=_aplicar)
+    ent_radio.bind("<Return>", _aplicar)
+    ent_cerca.bind("<Return>", _retinte_inmediato)
+    ent_cerca.bind("<KeyRelease>", _programar_retinte)
+
+    boton_ampliar = _t.Button(distancias, text="Ampliar (consulta a la base)",
                               bootstyle="primary-outline",
                               command=lambda: _ampliar())
-    boton_ampliar.pack(side="left", padx=(6, 0))
-    boton_todo = _t.Button(control, text="Todo (sin límite)",
+    boton_ampliar.pack(side="left", padx=(8, 0))
+    boton_todo = _t.Button(distancias, text="Todo (sin límite)",
                            bootstyle="primary-outline",
                            command=lambda: _ampliar(todo=True))
     boton_todo.pack(side="left", padx=(6, 0))
     if al_ampliar is None:
         boton_ampliar.configure(state="disabled")
         boton_todo.configure(state="disabled")
-    estado_control.pack(side="left", padx=(8, 0))
-    if radio_exportado is not None:
-        estado_control.config(text="Corte exportado: %g km." % radio_exportado)
-    ent_radio.bind("<Return>", lambda _e: _aplicar())
 
-    # El ancho se pide para la tabla más ancha de las dos, que es la de
-    # llegadas. Se recorta al máximo de la pantalla: pedir 1700 px en un monitor
-    # chico hace que las columnas queden fuera y haya que arrastrar la barra.
-    ancho = 230 + sum(a for _, _, a in COLUMNAS_FASE) + 60
-    otro = sum(a for _, _, a in COLUMNAS_NO_PICADA) + 60
-    ancho = max(ancho, otro, 900)
+    _actualizar_estado()
+
+    # Ancho cómodo (no el total de las columnas de llegadas, que son ~2040): la
+    # solapa «Sin arribos» entra sin barra y la de llegadas se desplaza con la
+    # suya. Se recorta al alto/ancho que aguante el monitor.
+    necesario = max(230 + sum(a for _, _, a in COLUMNAS_FASE) + 60,
+                    sum(a for _, _, a in COLUMNAS_NO_PICADA) + 60)
+    ancho = max(900, min(ANCHO_ESTACIONES, necesario))
     alto = min(760, max(420, ventana.winfo_screenheight() - 160))
-    try:
-        maximo = ventana.wm_maxsize()
-        # Con Some/None el par no es comparable; se descarta.
-        if maximo and maximo[0] > 0:
-            ancho = min(ancho, maximo[0] - 40)
-            alto = min(alto, maximo[1] - 40)
-    except Exception:
-        pass
-    _centrar_en_pantalla(ventana, ancho, alto)
+    ancho, alto = _acotar_al_techo(ventana, ancho, alto)
+    _centrar_en_pantalla(ventana, ancho, alto, sobre=padre)
+    if nueva:
+        ventana.deiconify()
+    # Ventana de consulta, no diálogo: sin grab, para poder seguir navegando.
+    descargas.encima_de(padre, ventana, modal=False)
     return ventana
 
 
 def _ventana_sin_arribos_ampliada(padre, evento, filas, radio, base, cwd,
                                   etiqueta_fuente=None, log=None,
-                                  ventana_previa=None):
+                                  ventana_previa=None,
+                                  umbral_cercano=UMBRAL_CERCANO_KM):
     """
     Muestra, en una ventana aparte, la lista sin arribos ampliada contra la base.
 
@@ -1555,9 +2040,11 @@ def _ventana_sin_arribos_ampliada(padre, evento, filas, radio, base, cwd,
     import ttkbootstrap as _t
     if ventana_previa is not None and ventana_previa.winfo_exists():
         ventana = ventana_previa
+        nueva = False
     else:
         ventana = _t.Toplevel(padre)
-    descargas.encima_de(padre, ventana, modal=False)
+        ventana.withdraw()
+        nueva = True
 
     ventana.title("Sin arribos ampliado — %s"
                   % (_texto(evento.get("id_evento")) or ""))
@@ -1582,19 +2069,218 @@ def _ventana_sin_arribos_ampliada(padre, evento, filas, radio, base, cwd,
     marco_tabla.pack(fill="both", expand=True, padx=8, pady=(0, 8))
     _tabla_sin_arribos(_t, marco_tabla, filas, padre=ventana, cwd=cwd,
                        etiqueta="ampliado_%s" % (etiqueta_fuente or "seiscomp"),
-                       log=log)
+                       log=log, umbral_cercano=umbral_cercano)
 
     ancho = 230 + sum(a for _, _, a in COLUMNAS_NO_PICADA) + 60
     ancho = max(ancho, 900)
     alto = min(760, max(420, ventana.winfo_screenheight() - 160))
+    ancho, alto = _acotar_al_techo(ventana, ancho, alto)
+    _centrar_en_pantalla(ventana, ancho, alto, sobre=padre)
+    if nueva:
+        ventana.deiconify()
+    descargas.encima_de(padre, ventana, modal=False)
+    return ventana
+
+
+def _ventana_analisis_rapido(padre, ruta_no_picadas, eventos, cwd,
+                             etiqueta_fuente=None, log=None,
+                             al_abrir_evento=None, ventana_previa=None):
+    """
+    Abre la ventana del «Análisis rápido».
+
+    Busca en TODO el catálogo los eventos que tienen estaciones sin arribos
+    cercanas y los lista, para acotar la revisión a los casos que importan.
+    Tiene dos solapas: «Contexto» (qué mide y cómo se lee) y «Resultados» (la
+    tabla, con umbral configurable, descarga y doble clic al detalle).
+    """
+    import ttkbootstrap as _t
+    if ventana_previa is not None and ventana_previa.winfo_exists():
+        ventana = ventana_previa
+        nueva = False
+    else:
+        ventana = _t.Toplevel(padre)
+        ventana.withdraw()
+        nueva = True
+
+    ventana.title("Análisis rápido — estaciones sin arribos cercanas")
+    for hijo in ventana.winfo_children():
+        hijo.destroy()
+
+    # Colores de la paleta del tema (no fijos), como en la tabla de sin arribos.
     try:
-        maximo = ventana.wm_maxsize()
-        if maximo and maximo[0] > 0:
-            ancho = min(ancho, maximo[0] - 40)
-            alto = min(alto, maximo[1] - 40)
+        from ttkbootstrap.style import Style
+        paleta = Style.get_instance().colors
+        oscuro = bool(paleta.dark)
     except Exception:
-        pass
-    _centrar_en_pantalla(ventana, ancho, alto)
+        oscuro = False
+    fondo = "#1f2b34" if oscuro else "#fff4d6"
+    texto_color = "#f2f2f2" if oscuro else "#7a4b00"
+
+    datos = {"filas": [], "mostradas": []}
+    vista = {"arbol": None}
+    # Orden por clic: (columna, sentido). None = orden por defecto (severidad).
+    orden = {"columna": None, "descendente": False}
+
+    cuaderno = _t.Notebook(ventana)
+    marco_contexto = _t.Frame(cuaderno)
+    marco_resultados = _t.Frame(cuaderno)
+    cuaderno.add(marco_contexto, text="Contexto")
+    cuaderno.add(marco_resultados, text="Resultados")
+    cuaderno.pack(fill="both", expand=True, padx=6, pady=6)
+
+    _t.Label(marco_contexto, text=AYUDA_ANALISIS, justify="left",
+             wraplength=820).pack(anchor="w", padx=12, pady=12)
+
+    control = _t.Frame(marco_resultados)
+    control.pack(fill="x", padx=8, pady=(8, 0))
+    _t.Label(control, text="Distancia máxima (km):").pack(side="left")
+    ent_cerca = _t.Entry(control, width=6)
+    ent_cerca.insert(0, "%g" % UMBRAL_CERCANO_KM)
+    ent_cerca.pack(side="left", padx=(4, 6))
+    _ayuda_emergente(ent_cerca, "Distancia máxima a la que se busca una estación"
+                     " sin arribos cercana. Filtra el análisis.")
+    boton_recalcular = _t.Button(control, text="Recalcular",
+                                 bootstyle="secondary-outline")
+    boton_recalcular.pack(side="left")
+    boton_descargar = _t.Button(control, text="Descargar",
+                                bootstyle="secondary-outline")
+    boton_descargar.pack(side="right")
+    estado = _t.Label(control, text="", bootstyle="secondary")
+    estado.pack(side="right", padx=(0, 8))
+
+    _t.Label(marco_resultados,
+             text="Analiza TODO el catálogo (%d eventos), sin el filtro del"
+             " panel." % len(eventos),
+             bootstyle="warning", justify="left",
+             wraplength=900).pack(anchor="w", padx=8, pady=(4, 0))
+
+    leyenda = _t.Frame(marco_resultados)
+    leyenda.pack(anchor="w", padx=8, pady=(2, 0))
+    _t.Label(leyenda, text="Colores:", bootstyle="secondary").pack(side="left")
+    _t.Label(leyenda, text=" Cerca, con actividad → no se usó ",
+             background=fondo, foreground=texto_color,
+             font=("", 9, "bold")).pack(side="left", padx=(6, 4))
+    _t.Label(leyenda, text=" Cerca, sin actividad → ¿caída? ",
+             font=("", 9, "bold")).pack(side="left", padx=4)
+
+    marco_tabla = _t.Frame(marco_resultados)
+    marco_tabla.pack(fill="both", expand=True, padx=8, pady=(4, 8))
+
+    def _leer_umbral():
+        try:
+            valor = float(ent_cerca.get().strip().rstrip("kKmM"))
+        except ValueError:
+            return None
+        return valor if valor > 0 else None
+
+    def _abrir(_evento=None):
+        arbol = vista["arbol"]
+        if arbol is None or al_abrir_evento is None:
+            return
+        seleccion = arbol.selection()
+        if not seleccion:
+            return
+        try:
+            indice = int(seleccion[0])
+        except ValueError:
+            return
+        if 0 <= indice < len(datos["mostradas"]):
+            al_abrir_evento(datos["mostradas"][indice]["evento"])
+
+    def _aplicar_orden(columna):
+        """
+        Ciclo de orden al hacer clic en un encabezado.
+
+        Primera vez en la columna: ascendente. Segundo clic: descendente.
+        Tercer clic: vuelve al orden por defecto (severidad), para no perder la
+        vista que se arma sola con lo más relevante arriba.
+        """
+        if orden["columna"] != columna:
+            orden["columna"] = columna
+            orden["descendente"] = False
+        elif not orden["descendente"]:
+            orden["descendente"] = True
+        else:
+            orden["columna"] = None
+            orden["descendente"] = False
+        _pintar()
+
+    def _pintar():
+        for hijo in marco_tabla.winfo_children():
+            hijo.destroy()
+        claves = [c for c, _, _ in COLUMNAS_ANALISIS]
+        arbol = _t.Treeview(marco_tabla, columns=claves, show="headings",
+                            selectmode="browse")
+        for indice, (clave, titulo, ancho_col) in enumerate(COLUMNAS_ANALISIS):
+            marca = ""
+            if orden["columna"] == clave:
+                marca = " ▼" if orden["descendente"] else " ▲"
+            arbol.heading(clave, text=titulo + marca,
+                          command=lambda _e=None, c=clave: _aplicar_orden(c))
+            arbol.column(clave, width=ancho_col, minwidth=55, stretch=False)
+        barra = _t.Scrollbar(marco_tabla, orient="vertical", command=arbol.yview)
+        arbol.configure(yscrollcommand=barra.set)
+        barra.pack(side="right", fill="y")
+        barra_h = _t.Scrollbar(marco_tabla, orient="horizontal",
+                               command=arbol.xview)
+        arbol.configure(xscrollcommand=barra_h.set)
+        barra_h.pack(side="bottom", fill="x")
+        arbol.pack(side="left", fill="both", expand=True)
+        arbol.tag_configure("destacada", background=fondo,
+                            foreground=texto_color, font=("", 9, "bold"))
+        arbol.tag_configure("cercana", font=("", 9, "bold"))
+        datos["mostradas"] = _ordenar_analisis(
+            datos["filas"], orden["columna"], orden["descendente"])
+        for indice, resumen in enumerate(datos["mostradas"]):
+            etiqueta = "destacada" if resumen["destacadas"] else "cercana"
+            arbol.insert("", "end", iid=str(indice),
+                         values=_valores_analisis(resumen), tags=(etiqueta,))
+        arbol.bind("<Double-1>", _abrir)
+        arbol.bind("<Return>", _abrir)
+        vista["arbol"] = arbol
+
+    def _recalcular(_evento=None):
+        nuevo = _leer_umbral()
+        if nuevo is None:
+            estado.config(text="Umbral inválido.")
+            return
+        estado.config(text="Analizando…")
+        ventana.update_idletasks()
+        datos["filas"] = analizar_sin_arribos(ruta_no_picadas, eventos, nuevo)
+        _pintar()
+        estado.config(text="%d de %d eventos con cercanas ≤ %g km."
+                      % (len(datos["filas"]), len(eventos), nuevo))
+
+    def _descargar():
+        # Se baja en el orden que se ve en pantalla, para que el archivo y la
+        # tabla cuenten lo mismo.
+        filas = filas_analisis_largo(datos["mostradas"])
+        ruta = _exportar_listado(
+            filas, _valores_analisis_largo, COLUMNAS_ANALISIS_LARGO, cwd,
+            "analisis_%s" % (etiqueta_fuente or "seiscomp"), padre=ventana)
+        if ruta is None:
+            estado.config(text="No hay filas para descargar.")
+            return
+        aviso = "Descargadas %d filas a %s" % (len(filas),
+                                               os.path.basename(ruta))
+        estado.config(text=aviso)
+        if log:
+            log(aviso)
+
+    boton_recalcular.configure(command=_recalcular)
+    boton_descargar.configure(command=_descargar)
+    ent_cerca.bind("<Return>", _recalcular)
+
+    _recalcular()
+
+    necesario = sum(a for _, _, a in COLUMNAS_ANALISIS) + 60
+    ancho = max(900, min(ANCHO_ESTACIONES, necesario))
+    alto = min(760, max(420, ventana.winfo_screenheight() - 160))
+    ancho, alto = _acotar_al_techo(ventana, ancho, alto)
+    _centrar_en_pantalla(ventana, ancho, alto, sobre=padre)
+    if nueva:
+        ventana.deiconify()
+    descargas.encima_de(padre, ventana, modal=False)
     return ventana
 
 
@@ -1719,6 +2405,15 @@ def abrir_panel(contenedor, ruta_eventos, ruta_fases=None,
                                 bootstyle="secondary-outline", width=17,
                                 state="disabled")
     boton_exportar.pack(side="right", padx=(8, 8))
+    # El análisis rápido va sobre la lista, al lado de «Exportar lista», para
+    # dejar claro que recorre TODO el catálogo y no el filtro del panel.
+    boton_analisis = ttk.Button(barra, text="Análisis rápido",
+                                bootstyle="secondary-outline", width=15,
+                                state="normal" if hay_no_picadas else "disabled")
+    boton_analisis.pack(side="right")
+    _ayuda_emergente(boton_analisis,
+                     "Busca en TODO el catálogo los eventos con estaciones sin"
+                     " arribos cercanas (no usa el filtro del panel).")
     etiqueta_estado = ttk.Label(barra, text="", bootstyle="secondary")
     etiqueta_estado.pack(side="right")
 
@@ -1740,7 +2435,8 @@ def abrir_panel(contenedor, ruta_eventos, ruta_fases=None,
     barra_ev = ttk.Scrollbar(marco_lista, orient="vertical",
                              command=arbol_ev.yview)
     arbol_ev.configure(yscrollcommand=barra_ev.set)
-    arbol_ev.pack(side="left", fill="both", expand=True)
+    # Barras antes que el árbol (ver _construir_arbol_fases): empaquetar el árbol
+    # primero las deja en 1x1 px.
     barra_ev.pack(side="right", fill="y")
     # Las columnas del panel suman 1275 px. Con la ventana que trae abrir_panel
     # entran, pero en una achicada las últimas se van de la vista y no había
@@ -1749,6 +2445,7 @@ def abrir_panel(contenedor, ruta_eventos, ruta_fases=None,
                             command=arbol_ev.xview)
     arbol_ev.configure(xscrollcommand=barra_h.set)
     barra_h.pack(side="bottom", fill="x")
+    arbol_ev.pack(side="left", fill="both", expand=True)
 
     # Orden por columna: se guarda el sentido y se reordena al hacer clic.
     orden = {"columna": None, "descendente": False}
@@ -1854,16 +2551,18 @@ def abrir_panel(contenedor, ruta_eventos, ruta_fases=None,
                     % (len(elegido_orden), MAX_FILAS))
 
     def _abrir_estaciones():
-        """
-        Abre la ventana de estaciones del evento que está seleccionado.
+        """Abre la ventana de estaciones del evento que está seleccionado."""
+        _abrir_estaciones_para(estado.get("evento"))
 
-        Las llegadas y las estaciones sin arribos se leen acá, no en
-        _al_seleccionar: leerlas de cada evento que se selecciona sería
-        recorrer dos veces el archivo, y el costo no está en el disco sino en
-        el trabajo de armar el índice. Se leen solo del evento que se va a
-        mostrar.
+    def _abrir_estaciones_para(evento):
         """
-        evento = estado.get("evento")
+        Abre la ventana de estaciones de un evento concreto.
+
+        Recibe el evento en vez de leerlo de la selección para que el Análisis
+        rápido pueda abrir el detalle de un evento aunque no esté seleccionado
+        en la lista. Las llegadas y las estaciones sin arribos se leen acá: se
+        leen solo del evento que se va a mostrar, no de todos.
+        """
         if evento is None:
             return
         id_evento = evento.get("id_evento", "")
@@ -1872,7 +2571,7 @@ def abrir_panel(contenedor, ruta_eventos, ruta_fases=None,
         no_picadas = [] if not hay_no_picadas else _leer_fases_de_evento(
             ruta_no_picadas, indice_no_picadas, campos_no_picadas, id_evento)
 
-        def _ampliar_contra_base(radio):
+        def _ampliar_contra_base(radio, umbral_cercano=UMBRAL_CERCANO_KM):
             """
             Recalcula las estaciones sin arribos de este evento contra la base.
 
@@ -1915,7 +2614,8 @@ def abrir_panel(contenedor, ruta_eventos, ruta_fases=None,
             ventana_ampliada["ventana"] = _ventana_sin_arribos_ampliada(
                 contenedor, evento, filas, radio, base_datos, cwd,
                 etiqueta_fuente=etiqueta_fuente, log=log,
-                ventana_previa=ventana_ampliada.get("ventana"))
+                ventana_previa=ventana_ampliada.get("ventana"),
+                umbral_cercano=umbral_cercano)
             return len(filas)
 
         try:
@@ -1937,6 +2637,7 @@ def abrir_panel(contenedor, ruta_eventos, ruta_fases=None,
     ventana_estaciones = {"ventana": None}
     ventana_ampliada = {"ventana": None}
     ventana_detalle = {"ventana": None}
+    ventana_analisis = {"ventana": None}
     # _ventana_detalle llama a update_idletasks, que puede procesar un
     # <<TreeviewSelect>> que haya quedado encolado y reentrar acá antes de que
     # se guarde la ventana; sin esta guarda se abrirían dos ventanas iguales.
@@ -1973,12 +2674,37 @@ def abrir_panel(contenedor, ruta_eventos, ruta_fases=None,
         finally:
             seleccionando["activo"] = False
 
+    def _abrir_detalle_para(evento):
+        """Abre la ventana de parámetros de un evento concreto."""
+        fases = [] if sin_fases else _leer_fases_de_evento(
+            ruta_fases, indice_fases, campos_fases, evento.get("id_evento", ""))
+        ventana_detalle["ventana"] = _ventana_detalle(
+            contenedor, evento, fases, etiqueta_fuente=etiqueta_fuente,
+            sin_fases=sin_fases,
+            al_estaciones=lambda: _abrir_estaciones_para(evento),
+            ventana_previa=ventana_detalle.get("ventana"))
+
+    def _abrir_analisis():
+        """
+        Abre el Análisis rápido sobre TODO el catálogo.
+
+        No usa el filtro del panel a propósito: la gracia es barrer todos los
+        eventos y quedarse con los que tienen cercanas sin usar.
+        """
+        ventana_analisis["ventana"] = _ventana_analisis_rapido(
+            contenedor, ruta_no_picadas, eventos, cwd,
+            etiqueta_fuente=etiqueta_fuente, log=log,
+            al_abrir_evento=_abrir_detalle_para,
+            ventana_previa=ventana_analisis.get("ventana"))
+
     def _al_filtrar(_evento=None):
         # Solo repuebla la lista. No selecciona ni abre el detalle: si lo
         # hiciera, cada tecla del filtro abriría una ventana de parámetros.
         _llenar_eventos()
 
     boton_exportar.configure(command=_al_exportar)
+    if hay_no_picadas:
+        boton_analisis.configure(command=_abrir_analisis)
 
     caja_filtro.bind("<KeyRelease>", _al_filtrar)
     caja_mag.bind("<KeyRelease>", _al_filtrar)
@@ -1991,7 +2717,11 @@ def abrir_panel(contenedor, ruta_eventos, ruta_fases=None,
     # <<Modified>> cubre el pegado con el mouse, que no pasa por KeyRelease.
     caja_filtro.bind("<<Modified>>", _al_filtrar)
     caja_mag.bind("<<Modified>>", _al_filtrar)
-    arbol_ev.bind("<<TreeviewSelect>>", _al_seleccionar)
+    # El detalle abre con DOBLE clic (o Enter sobre la fila elegida). Con un
+    # solo clic se seleccionaba y ya se abría la ventana, así que un clic
+    # accidental la disparaba.
+    arbol_ev.bind("<Double-1>", _al_seleccionar)
+    arbol_ev.bind("<Return>", _al_seleccionar)
 
     # El botón se crea acá, con _al_filtrar ya definido. No es adorno: un camino
     # que dependa solo de un binding de teclado es fácil que se pierda, y el
@@ -2080,7 +2810,7 @@ def abrir_catalogo(contenedor, ruta_csv, etiqueta_fuente=None, log=None,
     barra_ev = ttk.Scrollbar(cuerpo, orient="vertical",
                              command=arbol_ev.yview)
     arbol_ev.configure(yscrollcommand=barra_ev.set)
-    arbol_ev.pack(side="left", fill="both", expand=True)
+    # Barras antes que el árbol (ver _construir_arbol_fases).
     barra_ev.pack(side="right", fill="y")
     # El catálogo de eventquery suma 890 px contra los 980 de la ventana
     # principal: al achicarla ya se perdían columnas, y con Lat/Lon en el panel
@@ -2089,6 +2819,7 @@ def abrir_catalogo(contenedor, ruta_csv, etiqueta_fuente=None, log=None,
                             command=arbol_ev.xview)
     arbol_ev.configure(xscrollcommand=barra_h.set)
     barra_h.pack(side="bottom", fill="x")
+    arbol_ev.pack(side="left", fill="both", expand=True)
 
     orden = {"columna": None, "descendente": False}
 
@@ -2246,6 +2977,7 @@ COLUMNAS_NO_ACTUALIZADO = [
     ("dt_seg", "Δt (s)", 70),
     ("dlat", "Δlat (°)", 80),
     ("dlon", "Δlon (°)", 80),
+    ("dist_km", "Dist (km)", 80),
     ("discrepancias", "Parámetros que difieren", 170),
 ]
 
@@ -2262,6 +2994,7 @@ ETIQUETAS_DISCREPANCIA = {
 # perdería decimales que sí están en el dato.
 _COLUMNAS_REDONDEADAS = frozenset((
     "prof_local", "prof_eventquery", "mag_local", "mag_eventquery", "dt_seg",
+    "dist_km",
 ))
 
 # Las que se ordenan numéricamente al hacer clic en el encabezado. Ordenar
@@ -2270,7 +3003,7 @@ _COLUMNAS_REDONDEADAS = frozenset((
 _COLUMNAS_ORDENABLES = frozenset((
     "lat_local", "lon_local", "lat_eventquery", "lon_eventquery",
     "prof_local", "prof_eventquery", "mag_local", "mag_eventquery",
-    "dt_seg", "dlat", "dlon",
+    "dt_seg", "dlat", "dlon", "dist_km",
 ))
 
 
@@ -2325,6 +3058,13 @@ def _no_actualizados(fuente, cwd=None):
         fila["discrepancias"] = ", ".join(
             ETIQUETAS_DISCREPANCIA.get(c, c)
             for c in _discrepancias(fila)) or VACIO
+        # La columna dist_km la escribe compara.py; con un atribucion de una
+        # corrida vieja se calcula acá para no dejarla vacía.
+        if not str(fila.get("dist_km", "")).strip():
+            distancia = comparacion.distancia_km(
+                fila.get("lat_eventquery"), fila.get("lon_eventquery"),
+                fila.get("lat_local"), fila.get("lon_local"))
+            fila["dist_km"] = "" if distancia is None else round(distancia, 3)
     return list(mejores.values())
 
 
@@ -2341,9 +3081,9 @@ def _no_actualizado(fila):
     """Si este cruce marca el evento como no actualizado.
 
     Mismo criterio que usa comparar() en compara.py, vía comparacion.py:
-    difieren la latitud, la longitud, la profundidad o la magnitud, comparadas
-    numéricamente a la precisión con la que se manejan (coordenadas a 3
-    decimales; profundidad y magnitud a 1).
+    difieren la latitud, la longitud, la profundidad o la magnitud. Las
+    coordenadas se comparan con la tolerancia de redondeo del publicado
+    (TOLERANCIA_COORDENADA); profundidad y magnitud, exactas a 1 decimal.
     """
     return bool(_discrepancias(fila))
 
@@ -2409,14 +3149,62 @@ def abrir_no_actualizados(contenedor, fuente, log=None, cwd=None):
         etiqueta_estado.config(text=aviso)
         log(aviso)
 
+    def _ver_mapa(_evento=None):
+        """Abre planta+perfil de la solución local vs la publicada del evento."""
+        seleccion = arbol.selection()
+        if not seleccion:
+            return
+        try:
+            fila = estado["elegidas"][int(seleccion[0])]
+        except (ValueError, IndexError):
+            return
+
+        def _num(clave):
+            try:
+                return float(str(fila.get(clave, "")).strip())
+            except (TypeError, ValueError):
+                return None
+
+        if _num("lat_local") is None or _num("lon_local") is None:
+            etiqueta_estado.config(text="El evento no tiene coordenadas.")
+            return
+        local = {
+            "rol": "local", "fecha hora": fila.get("fecha_local", ""),
+            "latitud": _num("lat_local"), "longitud": _num("lon_local"),
+            "prof": _num("prof_local"), "magnitud": fila.get("mag_local", ""),
+            "tipo": fila.get("tipo_mag_local", ""),
+            "analista": fila.get("analista", ""),
+        }
+        eventos = [local]
+        # Si la fila trae la solución publicada, va también para comparar.
+        if _num("lat_eventquery") is not None and _num("lon_eventquery") is not None:
+            eventos.append({
+                "rol": "publicado",
+                "fecha hora": fila.get("fecha_eventquery", ""),
+                "latitud": _num("lat_eventquery"),
+                "longitud": _num("lon_eventquery"),
+                "prof": _num("prof_eventquery"),
+                "magnitud": fila.get("mag_eventquery", ""),
+                "tipo": fila.get("tipo_mag_eventquery", ""),
+            })
+        try:
+            import plotear
+            plotear.abrir_eventos(eventos, fuente)
+        except Exception as e:
+            log("[error] no se pudo plotear: %s" % e)
+            etiqueta_estado.config(text="No se pudo plotear el evento.")
+
     boton_descargar = ttk.Button(marco_controles, text="Descargar",
                                  bootstyle="primary-outline",
                                  command=_al_descargar)
     boton_descargar.pack(side="right")
     ttk.Button(marco_controles, text="Descargar todo",
-               bootstyle="secondary-outline",
+               bootstyle="primary-outline",
                command=lambda: _al_descargar(todas=True)).pack(
                    side="right", padx=(6, 0))
+    # Aviso corto: el detalle se abre con doble clic, no hay botón.
+    ttk.Label(marco_controles, text="Doble clic plotea",
+              bootstyle="secondary").pack(side="right", padx=(10, 0))
 
     # --- Tabla ---
     marco_tabla = ttk.Frame(marco)
@@ -2434,9 +3222,14 @@ def abrir_no_actualizados(contenedor, fuente, log=None, cwd=None):
     barra_h = ttk.Scrollbar(marco_tabla, orient="horizontal",
                             command=arbol.xview)
     arbol.configure(xscrollcommand=barra_h.set)
-    arbol.pack(side="left", fill="both", expand=True)
+    # Barras antes que el árbol (ver _construir_arbol_fases).
     barra_v.pack(side="right", fill="y")
     barra_h.pack(side="bottom", fill="x")
+    arbol.pack(side="left", fill="both", expand=True)
+
+    # Doble clic (o Enter con la fila elegida) abre planta+perfil del evento.
+    arbol.bind("<Double-1>", _ver_mapa)
+    arbol.bind("<Return>", _ver_mapa)
 
     def _clave_orden(fila, columna):
         """Clave de orden de una fila. Las numéricas no salen de la columna."""

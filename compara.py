@@ -37,10 +37,13 @@ MAX_LAT_LON_ESTRICTO=1.0
 
 # Dentro de esa ventana, un evento se considera actualizado si sus parámetros
 # coinciden con la solución local a la precisión con la que se manejan:
-# coordenadas a 3 decimales, profundidad y magnitud a 1 (ver comparacion.py).
-# Antes se comparaban los textos tal cual, y el mismo valor escrito con
-# distinta cantidad de decimales (-31.64 contra -31.639999...) se marcaba como
-# no actualizado. La comparación numérica incluye ahora también la magnitud.
+# profundidad y magnitud a 1 decimal, y las coordenadas con una tolerancia de
+# media centésima (ver comparacion.py). Esa tolerancia es porque el catálogo
+# publicado (el que arma «publica») guarda lat/lon con 2 decimales mientras el
+# local usa 3: comparar a 3 decimales exactos marcaba como no actualizado casi
+# todo, aunque fuera el mismo evento. Antes se comparaban los textos tal cual, y
+# el mismo valor escrito con distinta cantidad de decimales se marcaba como no
+# actualizado.
 
 # cabecera para cada archivo .txt de salida (Para plotear con google earth)
 cabecera="fecha hora latitud longitud prof mag tipomag analista percibido\n"
@@ -174,19 +177,26 @@ def comparar(listacsv_1, listacsv_2, max_seg, max_lat, max_lon, sufijo,
                     # atribuir el evento publicado a un analista. El Δt y las
                     # distancias se guardan sin signo para que el consumidor
                     # pueda judgear la calidad del cruce sin recalcular nada.
+                    distancia = comparacion.distancia_km(
+                        sismo2['lat'], sismo2['lon'],
+                        sismo1['lat'], sismo1['lon'])
                     cruces.append({
+                        "dist_km": "" if distancia is None
+                        else round(distancia, 3),
                         "n_fila_eventquery": sismo1['n_fila'],
                         "fecha_eventquery": sismo1['fecha_hora'],
                         "lat_eventquery": sismo1['lat'],
                         "lon_eventquery": sismo1['lon'],
                         "prof_eventquery": sismo1['prof'],
                         "mag_eventquery": sismo1['mag'],
+                        "tipo_mag_eventquery": sismo1['tipo_mag'],
                         "percibido": sismo1['perc'],
                         "fecha_local": sismo2['fecha_hora'],
                         "lat_local": sismo2['lat'],
                         "lon_local": sismo2['lon'],
                         "prof_local": sismo2['prof'],
                         "mag_local": sismo2['mag'],
+                        "tipo_mag_local": sismo2['tipo_mag'],
                         "analista": sismo2['analista'],
                         "dt_seg": round(min(delta_seg, delta_seg_aux), 3),
                         "dlat": round(delta_lat, 4),
@@ -269,10 +279,10 @@ def comparar(listacsv_1, listacsv_2, max_seg, max_lat, max_lon, sufijo,
                 candidatos[clave] = candidatos.get(clave, 0) + 1
             columnas = ["n_fila_eventquery", "fecha_eventquery",
                         "lat_eventquery", "lon_eventquery", "prof_eventquery",
-                        "mag_eventquery", "percibido", "fecha_local",
-                        "lat_local", "lon_local", "prof_local", "mag_local",
-                        "analista", "dt_seg", "dlat", "dlon", "n_candidatos",
-                        "fuente"]
+                        "mag_eventquery", "tipo_mag_eventquery", "percibido",
+                        "fecha_local", "lat_local", "lon_local", "prof_local",
+                        "mag_local", "tipo_mag_local", "analista", "dt_seg",
+                        "dlat", "dlon", "dist_km", "n_candidatos", "fuente"]
             with open(destino, "w", newline="") as salida_atr:
                 escritor = csv.writer(salida_atr)
                 escritor.writerow(columnas)

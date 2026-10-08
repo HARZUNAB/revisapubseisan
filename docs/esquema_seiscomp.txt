@@ -8,6 +8,11 @@ fases, y ampliacion de estaciones sin arribos contra la base).
 
 Version en texto plano de docs/esquema_seiscomp.md (sin diagrama Mermaid).
 
+Para verlo como diagrama EER en MySQL Workbench, importar
+esquema_seiscomp_mysql.sql (File -> Import -> Reverse Engineer MySQL Create
+Script). Es una adaptacion a MySQL solo para visualizar; la base real es
+PostgreSQL.
+
 
 MODELO DE IDENTIDAD
 -------------------

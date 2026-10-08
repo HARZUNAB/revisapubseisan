@@ -5,6 +5,11 @@ herramienta, con sus relaciones y una descripción de cada una. No es el esquema
 completo de SeisComp: cubre lo que el proyecto lee (exportación de eventos y
 fases, y ampliación de estaciones sin arribos contra la base).
 
+> Para verlo como diagrama EER en **MySQL Workbench**, importar
+> `esquema_seiscomp_mysql.sql` (File → Import → Reverse Engineer MySQL Create
+> Script). Es una adaptación a MySQL solo para visualizar; la base real es
+> PostgreSQL.
+
 ## Modelo de identidad
 
 Toda la jerarquía de objetos de SeisComp comparte dos piezas:

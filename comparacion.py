@@ -21,9 +21,22 @@ es justo el falso positivo que este módulo evita: acá se comparan los números
 redondeados a la precisión de cada campo.
 """
 
+import math
+
 DECIMALES_COORDENADA = 3
 DECIMALES_PROFUNDIDAD = 1
 DECIMALES_MAGNITUD = 1
+
+# El catálogo publicado (el que arma «publica») guarda lat/lon con 2 decimales,
+# mientras que las soluciones locales (Seisan/SeisComp) usan 3. Por eso dos
+# soluciones del MISMO evento difieren hasta media centésima (0.005°) por eje, y
+# comparar a 3 decimales exactos marcaba como "no actualizado" casi todo. Se
+# tolera esa media centésima. Profundidad y magnitud quedan exactas a 1 decimal:
+# en ambos lados tienen la misma precisión, así que una diferencia es real.
+TOLERANCIA_COORDENADA = 0.005
+
+# Radio medio terrestre (km) para la distancia haversine.
+RADIO_TIERRA_KM = 6371.0088
 
 
 def a_numero(texto):
@@ -39,7 +52,7 @@ def a_numero(texto):
         return None
 
 
-def mismo_numero(a, b, decimales, ignorar_signo=False):
+def mismo_numero(a, b, decimales, ignorar_signo=False, tolerancia=0.0):
     """
     True si a y b son el mismo número a la cantidad de decimales pedida.
 
@@ -49,6 +62,9 @@ def mismo_numero(a, b, decimales, ignorar_signo=False):
       no se puede afirmar que sean iguales a partir de un dato corrupto.
     - 'ignorar_signo' es para la profundidad, donde una diferencia de
       convención (positiva/negativa) marcaría el informe entero.
+    - 'tolerancia' > 0 considera iguales dos números que difieren a lo sumo en
+      ese valor (el Δ se redondea a 'decimales' para no pelear con el error de
+      punto flotante). Es lo que usa la comparación de coordenadas.
     """
     a, b = ("" if a is None else str(a).strip(),
             "" if b is None else str(b).strip())
@@ -59,12 +75,20 @@ def mismo_numero(a, b, decimales, ignorar_signo=False):
         return a == b
     if ignorar_signo:
         na, nb = abs(na), abs(nb)
+    if tolerancia:
+        return round(abs(na - nb), decimales) <= tolerancia
     return round(na, decimales) == round(nb, decimales)
 
 
 def mismo_coordenada(a, b):
-    """Latitud o longitud igual a 3 decimales."""
-    return mismo_numero(a, b, DECIMALES_COORDENADA)
+    """
+    Latitud o longitud iguales, tolerando el redondeo del publicado.
+
+    El publicado guarda 2 decimales y el local 3, así que la diferencia esperada
+    por redondeo llega a 0.005°; ver TOLERANCIA_COORDENADA.
+    """
+    return mismo_numero(a, b, DECIMALES_COORDENADA,
+                        tolerancia=TOLERANCIA_COORDENADA)
 
 
 def misma_profundidad(a, b):
@@ -124,3 +148,22 @@ def parametros_discrepantes(lat_a, lon_a, prof_a, mag_a,
     if not mismo_magnitud(mag_a, mag_b):
         campos.append("mag")
     return campos
+
+
+def distancia_km(lat1, lon1, lat2, lon2):
+    """
+    Distancia haversine (km) entre dos puntos, o None si falta algún dato.
+
+    Se usa para mostrar cuánto difiere la ubicación local de la publicada: la
+    columna «Dist (km)» de la pestaña «No actualizados».
+    """
+    valores = [a_numero(lat1), a_numero(lon1), a_numero(lat2), a_numero(lon2)]
+    if any(v is None for v in valores):
+        return None
+    la1, lo1, la2, lo2 = valores
+    phi1, phi2 = math.radians(la1), math.radians(la2)
+    dphi = math.radians(la2 - la1)
+    dlambda = math.radians(lo2 - lo1)
+    h = (math.sin(dphi / 2) ** 2
+         + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2)
+    return 2 * RADIO_TIERRA_KM * math.asin(min(1.0, math.sqrt(h)))

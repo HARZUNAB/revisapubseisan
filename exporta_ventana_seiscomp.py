@@ -59,7 +59,7 @@ picks de esa estación dentro de ±ACTIVIDAD_HORAS. Es un indicador indirecto de
 operación: en cero la estación puede estar caída, no interesarle el evento o
 simplemente nadie la revisó; mayor que cero indica que estaba operando y no
 tiene arribos en ESTE evento, que es el caso a revisar. El radio sale de
---radio-km (300 km por defecto) y la ventana de --actividad-h (24 horas por
+--radio-km (400 km por defecto) y la ventana de --actividad-h (24 horas por
 defecto).
 
 Este radio es SOLO para las estaciones sin arribos de los eventos de SeisComp:
@@ -175,11 +175,11 @@ RANGO_MAG_ESTACION = (-1.0, 10.0)
 
 # Radio, en kilómetros, para la búsqueda de estaciones que NO fueron picadas en
 # un evento. Es el número que hace acotable el análisis: sin radio salen todas
-# las estaciones del inventario, que no es lo que interesa. 300 km cubre de
+# las estaciones del inventario, que no es lo que interesa. 400 km cubre de
 # sobra la red cercana de un evento chileno, y con --radio-km se cambia sin
 # tocar el código. El revisor además puede ampliar el radio por evento contra
 # la base sin re-exportar, así que este corte solo acota el tamaño del archivo.
-RADIO_ESTACIONES_KM = 300.0
+RADIO_ESTACIONES_KM = 400.0
 
 # Qué tan lejos en el tiempo se busca que una estación haya picado otro evento
 # para considerarla "activa". No es lo mismo que estar en el inventario: una
@@ -1113,8 +1113,8 @@ WHERE 6371.0 * 2 * asin(sqrt(
 # estimación de filas a megabytes para el aviso previo.
 NO_PICADAS_BYTES_FILA = 154
 # A partir de esta estimación (en MB) la interfaz pide confirmación antes de
-# exportar. Un mes de datos a 300 km ronda los 20 MB, así que 200 avisa recién
-# en ventanas grandes (varios meses).
+# exportar. Un mes de datos ronda los 20 MB, así que 200 avisa recién en
+# ventanas grandes (varios meses).
 AVISO_NO_PICADAS_MB = 200.0
 
 
@@ -1127,9 +1127,10 @@ AVISO_NO_PICADAS_MB = 200.0
 RADIO_TIERRA_KM = 110.574   # Un grado de latitud, medido, no aproximado a 111
 RADIO_TIERRA_LON_KM = 111.320  # Un grado de longitud en el ecuador
 
-# Lado de las celdas del índice de estaciones, en grados. Con radio de 300 km se
-# repasa un radio de 3x3 a 7x7 celdas, así que se entra a menos celdas de las
-# que hay, y queda holgura de sobra para no perder ninguna por redondeo.
+# Lado de las celdas del índice de estaciones, en grados. Con un radio de unos
+# cientos de km se repasa una ventana de pocas celdas de lado, así que se entra
+# a menos celdas de las que hay, y queda holgura de sobra para no perder
+# ninguna por redondeo.
 GRADO_CELDA = 1.0
 
 
@@ -1144,9 +1145,9 @@ def _distancia_km(lat1, lon1, lat2, lon2):
     mucho más código para un resultado que no se distingue en el archivo.
 
     Se usa 'latitud' para el Este/Oeste. Es aproximada (el radio de la Tierra
-    crece con la latitud), y se elige esa a propósito porque en un radio de
-    300 km el error también es de metro y medio. Importa que la dirección sea
-    la misma para todos los puntos, que es lo que acá se cumple.
+    crece con la latitud), y se elige esa a propósito porque en un radio de unos
+    cientos de km el error también es de metro y medio. Importa que la dirección
+    sea la misma para todos los puntos, que es lo que acá se cumple.
     """
     radio = 6371.0088
     phi1, phi2 = math.radians(lat1), math.radians(lat2)

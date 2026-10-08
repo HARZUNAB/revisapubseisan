@@ -1,5 +1,15 @@
 # revisaapis
 
+## Documentación
+
+- `docs/manual_usuario.md` — manual de usuario (funciones, botones y capturas).
+- `docs/manual_tecnico.md` — manual técnico (scripts, interfaces y parámetros
+  ajustables).
+- `docs/esquema_seiscomp.md` / `docs/esquema_seiscomp.txt` — esquema de la base
+  de SeisComp. `docs/esquema_seiscomp_mysql.sql` es la versión importable en
+  MySQL Workbench (diagrama EER).
+- `docs/versiones/` — manuales anteriores archivados.
+
 ## Uso
 
 ```
@@ -86,7 +96,7 @@ habilita si el catálogo falló, falta o cambió.
 ### Pestañas de la ventana de revisión
 
 `app.py` agrupa las pestañas en filas, con el encabezado arriba y las fuentes
-abajo: `Registro`, `Panel` (Seisan / eventquery / SeisComp), `No publicados`
+abajo: `Registro`, `Panel de mapas y perfiles` (Seisan / eventquery / SeisComp), `No publicados`
 (Seisan / SeisComp), `No actualizados` (Seisan / SeisComp) y `Catálogo`
 (SeisComp / Seisan / eventquery). Se agrupan porque las nueve pestañas en una
 sola tira piden 947 px de ancho y quedaban cortadas; con los nombres cortos que
@@ -120,14 +130,22 @@ El CSV trae una fila por cruce y un mismo evento local puede tener más de un
 cruce, así que el listado agrupa por evento y muestra el mejor (menor Δt), que
 es lo mismo que hace el informe `informes/no_act_*_estricto.txt`.
 
-El panel de SeisComp es solo la lista de eventos, a todo el ancho. Al hacer clic
-en una fila, los parámetros del evento (y el botón «Estaciones») abren en una
-ventana aparte, que se reutiliza al cambiar de evento y **no bloquea** la lista:
-son ventanas de consulta, sin captura de entrada, así que se puede seguir
-navegando con ellas abiertas. Antes el detalle iba embebido al lado de la lista y
-abajo quedaba cortado, justo donde está ese botón; separarlo deja ver todo sin
-apretar ninguna mitad. Al abrir la pestaña, la ventana principal se agranda para
-que entren las columnas de la lista.
+El panel de SeisComp es solo la lista de eventos, a todo el ancho. Al hacer
+**doble clic** en una fila (o Enter con la fila elegida) los parámetros del
+evento (y el botón «Estaciones») abren en una ventana aparte, que se reutiliza al
+cambiar de evento y **no bloquea** la lista: son ventanas de consulta, sin
+captura de entrada, así que se puede seguir navegando con ellas abiertas. Antes
+el detalle iba embebido al lado de la lista y abajo quedaba cortado, justo donde
+está ese botón; separarlo deja ver todo sin apretar ninguna mitad. Al abrir la
+pestaña, la ventana principal se agranda para que entren las columnas de la
+lista.
+
+Las ventanas emergentes se abren ocultas y se muestran recién con su tamaño y
+posición finales (no se ve el salto desde la esquina), no pasan del tope de la
+app (1920x1080) y se centran sobre el monitor de la ventana principal, no sobre
+el escritorio virtual: con dos monitores, centrar en el escritorio completo las
+dejaba a caballo entre ambos. Cuando una tabla no entra en el ancho, se desplaza
+con su barra horizontal (todas las tablas la tienen).
 
 ### Estaciones del evento
 
@@ -136,7 +154,10 @@ ventana con dos solapas: **Con arribos**, con las llegadas de la solución
 preferida agrupadas por estación (la que estaba embebida en el detalle), y **Sin
 arribos**, con las estaciones del inventario que quedaron dentro del radio y no
 tienen arrivals/picks asociados al **origen preferido**. Ambas se pueden
-descargar como planilla.
+descargar como planilla. El encabezado, siempre visible sobre las dos solapas,
+muestra los **parámetros del evento** (fecha/hora, magnitud, profundidad, lat/lon,
+región, agencia) y el **analista** en negrita, para no perder de vista qué evento
+se está mirando.
 
 La tabla de «Con arribos» muestra, por cada llegada, si el pick fue **manual o
 automático** (`pick.m_evaluation_mode`), con el autor, la agencia y el método.
@@ -152,9 +173,9 @@ arribos no tiene fila de llegada, así que el `INNER JOIN` de las fases descarta
 justo lo que se busca. **No son estaciones que no grabaron.** La base de
 metadatos de SeisComp no sabe qué estaciones tienen formas de onda de cada evento
 —eso vive en el archivo de ondas—, así que la ayuda de la solapa y la columna
-`actividad_ventana` («Actividad inferida»: cuántos otros eventos tienen picks de
-esa estación dentro de ±24 h) son un indicador indirecto de operación, no una
-prueba.
+`actividad_ventana` («Con actividad ±24 h»: cuántos otros eventos tienen picks
+de esa estación dentro de ±24 h, o sea 24 h antes y 24 h después) son un
+indicador indirecto de operación, no una prueba.
 
 La cadena de inventario se valida entera por evento: red, estación, sensor
 location y stream tienen que estar vigentes en la hora del evento. Una estación
@@ -170,15 +191,19 @@ SeisComp no las trabaja (en esta base son 334 de 477). El binding es la config
 **actual** y no tiene épocas, así que en eventos históricos es una aproximación;
 si no se encuentran bindings, no se filtra y se avisa.
 
-El radio por defecto es de 300 km (`--radio-km`, se pregunta al exportar y se
+El radio por defecto es de 400 km (`--radio-km`, se pregunta al exportar y se
 puede bajar para catálogos grandes) y la ventana de actividad, de 24 horas
 (`--actividad-h`); la distancia se calcula con haversine, porque no hay PostGIS.
 **El radio es exclusivo de SeisComp**: corta la lista de estaciones sin arribos
 de sus eventos y no tiene nada que ver con los catálogos de Seisan ni de
-eventquery. Las columnas van ordenadas por distancia, las de menos de 50 km
-quedan en negrita y las de actividad inferida, en verde. El reuso de una
-exportación exige que el radio coincida con el anotado en la marca: cambiarlo
-obliga a re-exportar.
+eventquery. Las columnas van ordenadas por distancia. El resaltado cruza dos
+umbrales independientes del radio: el de **cerca** (≤ 50 km por defecto,
+ajustable en la ventana) y la actividad ±24 h. Las cuatro categorías, con su
+lectura: *cerca y con actividad* (fondo destacado) —estaba operando y cerca,
+**no se usó**—; *con actividad, más lejos* (verde); *cerca, sin actividad*
+(negrita) —**¿caída?**—; y *lejos, sin actividad* (normal). El umbral de cerca
+solo cambia el color, **no recorta la lista**. El reuso de una exportación exige
+que el radio coincida con el anotado en la marca: cambiarlo obliga a re-exportar.
 
 Como esa lista crece con los eventos y con el radio (en el histórico completo
 pasa de un gigabyte), antes de exportar la interfaz **estima el tamaño** en MB
@@ -186,9 +211,11 @@ pasa de un gigabyte), antes de exportar la interfaz **estima el tamaño** en MB
 (`AVISO_NO_PICADAS_MB`), pide confirmación. Si la base no responde, se exporta
 igual sin el aviso. El exportador imprime la misma estimación en el registro.
 
-El **encabezado de la ventana Estaciones** tiene un control de **radio** y tres
-acciones, siempre visibles. «Filtrar» recorta hacia abajo la lista exportada,
-sin tocar la base: sirve para mirar un radio más chico que el del corte.
+El **encabezado de la ventana Estaciones** tiene los controles de **radio** y de
+**cerca (km)** y tres acciones, siempre visibles. «Cerca (km)» es el umbral de
+resaltado (≤ 50 km por defecto): solo cambia los colores, no recorta la lista.
+«Filtrar» recorta hacia abajo la lista exportada, sin tocar la base: sirve para
+mirar un radio más chico que el del corte, y de paso reaplica el umbral de cerca.
 «Ampliar (consulta a la base)» recalcula, **para ese evento**, el inventario
 vigente a su hora y la actividad de las estaciones, y abre el resultado en una
 ventana aparte —con su propia descarga— para no pisar el corte exportado. «Todo
@@ -199,9 +226,9 @@ confirmación antes de mostrarla. La ampliación necesita conexión a la base; s
 está, avisa y deja el corte exportado como estaba.
 
 La columna de actividad se llama **«Actividad ±24 h»** y, arriba de la tabla, hay
-una línea fija que aclara qué mide: otros eventos con picks de esa estación
-dentro de ±24 h del origen (24 h antes y 24 h después). Es un indicador
-indirecto, no una prueba de que la estación haya grabado.
+una línea fija que aclara qué mide: «con actividad ±24 h» es que la estación picó
+otros eventos entre 24 h antes y 24 h después del origen (48 h en total). Es un
+indicador indirecto: 0 no prueba que la estación haya estado caída.
 
 El archivo ya trae los campos `waveform_status`, `availability_source`,
 `cobertura_desde` y `cobertura_hasta` para cuando se integren SDS,
@@ -212,6 +239,25 @@ onda.
 Esta ventana necesita el tercer archivo. Las exportaciones anteriores a este
 cambio no lo tienen: la solapa avisa que hay que re-exportar en vez de mostrar una
 tabla vacía, que se leería como «no había ninguna estación cerca».
+
+### Análisis rápido de sin arribos cercanos
+
+En el catálogo de SeisComp, **arriba de la lista y al lado de «Exportar lista»**,
+hay un botón **«Análisis rápido»** (solo si la exportación trae el archivo de sin
+arribos). Recorre **TODO el catálogo** —no usa el filtro del panel, y lo advierte—
+y busca los eventos que tienen estaciones sin arribos **cercanas** (dentro de un
+umbral configurable, 50 km por defecto), para acotar la revisión a esos casos.
+
+Abre una ventana con dos pestañas: **Contexto** (qué mide y cómo se lee) y
+**Resultados** (la tabla, con el umbral editable y «Recalcular», «Descargar» y
+doble clic al detalle del evento). La lista trae los datos clave del evento y el
+operador, más cuántas son *cercanas con actividad* (estaba operando y no se usó →
+calidad de la solución) y *cercanas sin actividad* (posible caída). Se ordena por
+severidad por defecto, y se puede **reordenar por cualquier columna** haciendo
+clic en su encabezado (ascendente → descendente → vuelta al orden por severidad;
+la columna activa se marca con ▲/▼). La descarga sale en **formato largo**,
+siguiendo el orden en pantalla: una fila por evento y estación cercana, con la
+clasificación, la distancia, la actividad y la estación.
 
 ### Esquema de la base de SeisComp
 
